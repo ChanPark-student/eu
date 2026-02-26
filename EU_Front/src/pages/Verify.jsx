@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Upload, ShieldCheck, AlertTriangle, FileText, CheckCircle2 } from 'lucide-react';
+import api from '../api/client';
 
 function Verify() {
     const [file, setFile] = useState(null);
@@ -14,26 +15,25 @@ function Verify() {
         }
     };
 
-    const handleVerify = () => {
+    const handleVerify = async () => {
         if (!systemName || !description) {
             alert("시스템 이름과 설명을 입력해주세요.");
             return;
         }
 
         setIsAnalyzing(true);
-        // Simulate API call to backend AI endpoint
-        setTimeout(() => {
-            setIsAnalyzing(false);
-            setResult({
-                level: 'High Risk', // Simulate High Risk
-                score: 82,
-                recommendations: [
-                    "인간의 감독(Human Oversight) 메커니즘을 명시적으로 문서화하십시오.",
-                    "데이터 편향성(Data Bias) 검증 리포트를 추가로 제출해야 합니다.",
-                    "사용자에게 AI와 상호작용하고 있음을 명확히 고지하십시오."
-                ]
+        try {
+            const response = await api.post('/ai/verify', {
+                system_name: systemName,
+                description: description
             });
-        }, 3000);
+            setResult(response.data);
+        } catch (error) {
+            console.error("Verification failed:", error);
+            alert("검증 과정 중 오류가 발생했습니다.");
+        } finally {
+            setIsAnalyzing(false);
+        }
     };
 
     return (
