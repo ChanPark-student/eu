@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EU AI Act Inspector</title>
+</head>
+
+<body>
+  <div id="error-log"
+    style="color: red; padding: 20px; font-family: monospace; z-index: 9999; position: absolute; background: white;">
+  </div>
+  <script>
+    window.addEventListener('error', function (event) {
+      document.getElementById('error-log').innerHTML += '<br/>Runtime Error: ' + event.message + ' at ' + event.filename + ':' + event.lineno;
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+      document.getElementById('error-log').innerHTML += '<br/>Promise Rejection: ' + event.reason;
+    });
+  </script>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
+</html>
