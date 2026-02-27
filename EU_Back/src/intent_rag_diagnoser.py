@@ -535,8 +535,7 @@ def _dedupe_overlapping_issue_signals(issues: Sequence[Mapping[str, Any]], max_i
             existing_bag = _issue_token_bag(existing)
             is_same_theme = item_theme == existing_theme
             overlap = _jaccard(item_bag, existing_bag)
-            # Keep more distinct issue variants unless overlap is very high.
-            should_merge = is_same_theme or overlap >= 0.82
+            should_merge = is_same_theme or overlap >= 0.68
             if should_merge:
                 kept[idx] = _merge_issue_signals(existing, item)
                 merged = True
@@ -715,8 +714,7 @@ def _normalize_theme(theme: str) -> str:
         return "Scenario risk"
     lowered = text.lower()
     if any(term in lowered for term in OUT_OF_SCOPE_LAW_TERMS):
-        # Preserve unknown English themes to avoid collapsing multiple issues into one generic label.
-        return text
+        return "사용자 맥락 기반 AI Act 리스크"
     # Prefer Korean labels for common English themes.
     if all(ord(ch) < 128 for ch in text):
         for hint, label in THEME_KO_HINTS:

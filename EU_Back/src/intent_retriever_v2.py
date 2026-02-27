@@ -287,7 +287,7 @@ def retrieve_issue_evidence_v2(
     summarize_requirement_ko: Callable[[str, str], str],
     control_code_from_label: Callable[[str], str],
     is_noisy_requirement: Callable[[str, str], bool],
-    final_threshold: float = 0.52,
+    final_threshold: float = 0.58,
 ) -> Dict[str, Any]:
     """Retrieve and rerank issue evidence with precision-first policy."""
     normalized_theme = str(theme or "").strip()
@@ -347,9 +347,9 @@ def retrieve_issue_evidence_v2(
         low_alignment_drop = (
             control_alignment == 0.0
             and (
-                path_score < 0.40
-                or token_overlap < 0.35
-                or lexical_norm < 0.55
+                path_score < 0.55
+                or token_overlap < 0.45
+                or lexical_norm < 0.65
             )
         )
         selected = final_score >= float(final_threshold) and not low_alignment_drop
