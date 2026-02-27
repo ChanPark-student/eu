@@ -36,7 +36,6 @@
     name: eu-frontend
     env: static
     rootDir: EU_Front
-    plan: free
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     envVars:
