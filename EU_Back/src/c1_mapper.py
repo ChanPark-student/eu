@@ -1,0 +1,711 @@
+"""Phase C-1 customer document to KG mapping and risk assessment.
+
+This module provides a deterministic MVP for B2B document diagnostics:
+- map customer text to UseCase candidates
+- detect compliance-control gaps from document evidence terms
+- pull supporting evidence from Neo4j (UseCase/Risk/Article/Requirement/Penalty/Timeline)
+- export machine-readable + markdown report
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Sequence
+
+from src.schema_extractor import USECASE_RULES
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _to_list_text(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(v) for v in value if str(v).strip()]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+BASE_USECASE_KEYWORDS: Dict[str, List[str]] = {
+    "UC-01": [
+        "biometric",
+        "face recognition",
+        "facial recognition",
+        "emotion recognition",
+        "생체",
+        "안면",
+        "감정 인식",
+    ],
+    "UC-02": [
+        "critical infrastructure",
+        "electricity",
+        "water supply",
+        "traffic control",
+        "infrastructure operation",
+        "핵심 인프라",
+        "전력",
+        "수도",
+        "교통 관제",
+    ],
+    "UC-03": [
+        "education",
+        "student",
+        "admission",
+        "vocational",
+        "교육",
+        "학생",
+        "입학",
+        "평가",
+    ],
+    "UC-04": [
+        "employment",
+        "recruitment",
+        "hiring",
+        "hr",
+        "workers",
+        "cv screening",
+        "인사",
+        "채용",
+        "면접",
+        "평가 코멘트",
+        "인재",
+    ],
+    "UC-05": [
+        "credit",
+        "loan",
+        "insurance",
+        "essential service",
+        "benefit",
+        "public assistance",
+        "신용",
+        "대출",
+        "보험",
+        "복지",
+    ],
+    "UC-06": [
+        "law enforcement",
+        "police",
+        "criminal",
+        "investigation",
+        "치안",
+        "수사",
+        "경찰",
+        "법 집행",
+    ],
+    "UC-07": [
+        "migration",
+        "asylum",
+        "border control",
+        "visa",
+        "immigration",
+        "이민",
+        "망명",
+        "국경",
+        "비자",
+    ],
+    "UC-08": [
+        "justice",
+        "court",
+        "judicial",
+        "election",
+        "democratic process",
+        "사법",
+        "재판",
+        "선거",
+        "민주적 절차",
+    ],
+}
+
+CONTENT_GENERATION_TERMS = [
+    "content",
+    "marketing copy",
+    "proposal",
+    "quotation",
+    "estimate",
+    "email draft",
+    "chatbot",
+    "llm",
+    "gpt",
+    "생성형",
+    "콘텐츠",
+    "견적서",
+    "제안서",
+    "카피라이팅",
+    "문안 생성",
+]
+
+CHECKLIST_RULES: List[Dict[str, Any]] = [
+    {
+        "id": "risk_management",
+        "title": "Risk management process",
+        "severity_if_missing": "high",
+        "evidence_terms": ["risk management", "위험관리", "risk register", "risk owner"],
+        "recommended_action": "문서에 위험 식별/평가/완화 절차와 책임자를 명시하세요.",
+        "related_articles": ["Article 9"],
+        "obligation_keywords": ["risk management", "high-risk"],
+    },
+    {
+        "id": "data_governance",
+        "title": "Data governance for training/validation/testing",
+        "severity_if_missing": "high",
+        "evidence_terms": [
+            "data governance",
+            "training data",
+            "validation data",
+            "testing data",
+            "데이터 거버넌스",
+            "학습 데이터",
+            "검증 데이터",
+            "테스트 데이터",
+        ],
+        "recommended_action": "학습/검증/테스트 데이터 출처, 품질 기준, 편향 통제를 문서화하세요.",
+        "related_articles": ["Article 10"],
+        "obligation_keywords": ["data governance", "training", "validation", "testing"],
+    },
+    {
+        "id": "technical_documentation",
+        "title": "Technical documentation",
+        "severity_if_missing": "medium",
+        "evidence_terms": ["technical documentation", "기술문서", "system card", "model card"],
+        "recommended_action": "기술문서(설계, 제한사항, 성능 한계, 운영 조건)를 준비하세요.",
+        "related_articles": ["Article 11"],
+        "obligation_keywords": ["technical documentation", "documentation"],
+    },
+    {
+        "id": "logging_traceability",
+        "title": "Logging and traceability",
+        "severity_if_missing": "medium",
+        "evidence_terms": ["log retention", "audit log", "traceability", "로그", "감사기록", "추적"],
+        "recommended_action": "주요 입력/출력과 결정 근거를 추적 가능한 로그로 보관하세요.",
+        "related_articles": ["Article 12"],
+        "obligation_keywords": ["record", "log", "traceability"],
+    },
+    {
+        "id": "transparency_notice",
+        "title": "User transparency notice",
+        "severity_if_missing": "high",
+        "evidence_terms": [
+            "ai generated",
+            "generated by ai",
+            "transparent notice",
+            "disclosure",
+            "ai 생성",
+            "자동 생성 고지",
+            "투명성 고지",
+        ],
+        "recommended_action": "사용자/수신자에게 AI 생성 또는 AI 상호작용 사실을 명확히 고지하세요.",
+        "related_articles": ["Article 13", "Article 50"],
+        "obligation_keywords": ["transparen", "documentation", "certain ai systems"],
+    },
+    {
+        "id": "human_oversight",
+        "title": "Human oversight",
+        "severity_if_missing": "medium",
+        "evidence_terms": ["human oversight", "manual review", "human-in-the-loop", "인적 감독", "수동 검토"],
+        "recommended_action": "인적 검토 프로세스(차단/승인 권한 포함)를 운영절차에 포함하세요.",
+        "related_articles": ["Article 14"],
+        "obligation_keywords": ["human oversight", "competence", "authority"],
+    },
+    {
+        "id": "accuracy_robustness",
+        "title": "Accuracy, robustness, cybersecurity",
+        "severity_if_missing": "medium",
+        "evidence_terms": [
+            "accuracy target",
+            "robustness",
+            "security testing",
+            "fallback",
+            "정확도",
+            "강건성",
+            "보안 점검",
+        ],
+        "recommended_action": "정확도/강건성/보안 기준과 테스트 결과를 정기 점검하세요.",
+        "related_articles": ["Article 15"],
+        "obligation_keywords": ["accuracy", "robustness", "cybersecurity"],
+    },
+    {
+        "id": "copyright_training_summary",
+        "title": "Copyright policy and training-data summary",
+        "severity_if_missing": "high",
+        "evidence_terms": [
+            "copyright policy",
+            "rights reservation",
+            "training data summary",
+            "저작권 정책",
+            "권리 유보",
+            "학습데이터 요약",
+        ],
+        "recommended_action": "저작권 준수 정책과 학습데이터 요약 공개 절차를 명시하세요.",
+        "related_articles": ["Article 53", "Article 54", "Article 55"],
+        "obligation_keywords": ["copyright", "summary", "training", "general-purpose"],
+    },
+]
+
+SEVERITY_SCORE = {"high": 20, "medium": 10, "low": 5}
+
+
+def read_customer_text(
+    *,
+    customer_text: str | None = None,
+    customer_doc_path: Path | None = None,
+) -> str:
+    """Load customer text from inline string or a local document path."""
+    inline = (customer_text or "").strip()
+    if inline:
+        return inline
+    if customer_doc_path is None:
+        raise ValueError("Either customer_text or customer_doc_path must be provided.")
+    path = Path(customer_doc_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Customer document not found: {path}")
+    if path.suffix.lower() in {".txt", ".md"}:
+        return path.read_text(encoding="utf-8")
+    if path.suffix.lower() in {".json"}:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json.dumps(data, ensure_ascii=False)
+    raise ValueError("Supported customer_doc_path formats are .txt, .md, .json")
+
+
+def _build_usecase_keyword_map() -> Dict[str, List[str]]:
+    combined: Dict[str, List[str]] = {}
+    for rule in USECASE_RULES:
+        uc_id = str(rule["id"])
+        merged = set(k.lower() for k in rule.get("keywords", []))
+        merged.update(k.lower() for k in BASE_USECASE_KEYWORDS.get(uc_id, []))
+        combined[uc_id] = sorted(merged)
+    return combined
+
+
+USECASE_KEYWORD_MAP = _build_usecase_keyword_map()
+USECASE_META = {str(rule["id"]): rule for rule in USECASE_RULES}
+
+
+def map_usecases_by_rules(customer_text: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    """Map customer text to UseCase candidates with deterministic keyword rules."""
+    norm = _normalize_text(customer_text)
+    candidates: List[Dict[str, Any]] = []
+    for uc_id, keywords in USECASE_KEYWORD_MAP.items():
+        hits = sorted({kw for kw in keywords if kw and kw in norm})
+        score = len(hits)
+        if score <= 0:
+            continue
+        meta = USECASE_META.get(uc_id, {})
+        candidates.append(
+            {
+                "usecase_id": uc_id,
+                "title": meta.get("title", uc_id),
+                "annex_point": meta.get("annex_point", ""),
+                "score": score,
+                "matched_keywords": hits[:12],
+            }
+        )
+    candidates.sort(key=lambda x: (-int(x["score"]), str(x["usecase_id"])))
+    return candidates[: max(1, int(top_k))]
+
+
+def detect_document_gaps(customer_text: str) -> List[Dict[str, Any]]:
+    """Detect presence/missing status for compliance-control checklist items."""
+    norm = _normalize_text(customer_text)
+    controls: List[Dict[str, Any]] = []
+    for rule in CHECKLIST_RULES:
+        hits = sorted({term for term in rule["evidence_terms"] if term.lower() in norm})
+        controls.append(
+            {
+                "id": rule["id"],
+                "title": rule["title"],
+                "present": bool(hits),
+                "matched_terms": hits,
+                "severity_if_missing": rule["severity_if_missing"],
+                "recommended_action": rule["recommended_action"],
+                "related_articles": list(rule["related_articles"]),
+                "obligation_keywords": list(rule["obligation_keywords"]),
+            }
+        )
+    return controls
+
+
+def infer_document_profile(customer_text: str) -> Dict[str, Any]:
+    """Infer lightweight document profile signals."""
+    norm = _normalize_text(customer_text)
+    content_hits = sorted({kw for kw in CONTENT_GENERATION_TERMS if kw in norm})
+    return {
+        "content_generation_detected": bool(content_hits),
+        "content_generation_terms": content_hits[:12],
+    }
+
+
+def summarize_risk(
+    *,
+    controls: Sequence[Dict[str, Any]],
+    mapped_usecases: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Summarize risk score/level from missing controls + mapped usecases."""
+    missing = [c for c in controls if not bool(c.get("present"))]
+    present_count = len(controls) - len(missing)
+
+    score = 0
+    for item in missing:
+        sev = str(item.get("severity_if_missing", "low")).lower()
+        score += SEVERITY_SCORE.get(sev, 5)
+    if mapped_usecases:
+        score += 20
+    score = min(100, score)
+
+    if score >= 70:
+        level = "HIGH"
+    elif score >= 40:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    return {
+        "risk_score": score,
+        "risk_level": level,
+        "control_total": len(controls),
+        "control_present_count": present_count,
+        "control_missing_count": len(missing),
+    }
+
+
+def _query_usecase_context(graph: Any, usecase_ids: Sequence[str]) -> List[Dict[str, Any]]:
+    if not usecase_ids:
+        return []
+    rows = graph.query(
+        """
+        MATCH (u:UseCase)
+        WHERE u.id IN $usecase_ids
+        OPTIONAL MATCH (u)-[:CLASSIFIED_AS]->(r:Riskcategory)
+        OPTIONAL MATCH (u)-[:REFERENCES]->(a:Article)
+        RETURN u.id AS usecase_id,
+               u.title AS title,
+               u.annex_point AS annex_point,
+               collect(DISTINCT r.id) AS risk_categories,
+               collect(DISTINCT a.id)[0..15] AS related_articles
+        ORDER BY usecase_id
+        """,
+        {"usecase_ids": list(usecase_ids)},
+    )
+    return [
+        {
+            "usecase_id": row.get("usecase_id", ""),
+            "title": row.get("title", ""),
+            "annex_point": row.get("annex_point", ""),
+            "risk_categories": _to_list_text(row.get("risk_categories")),
+            "related_articles": _to_list_text(row.get("related_articles")),
+        }
+        for row in rows
+    ]
+
+
+def _query_compliance_requirements(graph: Any, limit: int = 80) -> List[Dict[str, Any]]:
+    rows = graph.query(
+        """
+        MATCH (c:ComplianceReq)-[:DEFINED_IN]->(a:Article)
+        RETURN c.id AS req_id,
+               c.article_num AS article_num,
+               a.id AS article_id,
+               c.text AS requirement_text
+        ORDER BY c.article_num, c.id
+        LIMIT $limit
+        """,
+        {"limit": int(limit)},
+    )
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "req_id": row.get("req_id", ""),
+                "article_num": int(row.get("article_num", 0) or 0),
+                "article_id": row.get("article_id", ""),
+                "requirement_text": str(row.get("requirement_text", "")).strip(),
+            }
+        )
+    return result
+
+
+def _query_obligations_by_keywords(
+    graph: Any,
+    keywords: Sequence[str],
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    kws = [k.lower() for k in keywords if str(k).strip()]
+    if not kws:
+        return []
+    rows = graph.query(
+        """
+        MATCH (o:Obligation)
+        WHERE ANY(kw IN $keywords WHERE toLower(coalesce(o.id, '')) CONTAINS kw
+                                  OR toLower(coalesce(o.description, '')) CONTAINS kw)
+        OPTIONAL MATCH (o)-[:DEFINED_IN]->(a:Article)
+        OPTIONAL MATCH (o)-[:ENFORCED_BY]->(i:Institution)
+        RETURN o.id AS obligation_id,
+               coalesce(o.description, '') AS description,
+               collect(DISTINCT a.id)[0..6] AS articles,
+               collect(DISTINCT i.id)[0..4] AS enforced_by
+        LIMIT $limit
+        """,
+        {"keywords": kws, "limit": int(limit)},
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "obligation_id": row.get("obligation_id", ""),
+                "description": str(row.get("description", "")).strip(),
+                "articles": _to_list_text(row.get("articles")),
+                "enforced_by": _to_list_text(row.get("enforced_by")),
+            }
+        )
+    return out
+
+
+def _query_penalty_context(graph: Any, limit: int = 15) -> List[Dict[str, Any]]:
+    rows = graph.query(
+        """
+        MATCH (a:Article)-[:IMPOSES]->(p:Penalty)
+        OPTIONAL MATCH (src:Article)-[:REFERENCES]->(a)
+        WHERE a.id IN ['Article 99', 'Article 101']
+           OR toLower(coalesce(p.id, '')) CONTAINS 'fine'
+           OR toLower(coalesce(p.id, '')) CONTAINS 'penalt'
+        RETURN a.id AS penalty_article,
+               p.id AS penalty_id,
+               coalesce(p.description, '') AS penalty_description,
+               collect(DISTINCT src.id)[0..6] AS referenced_by
+        LIMIT $limit
+        """,
+        {"limit": int(limit)},
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "penalty_article": row.get("penalty_article", ""),
+                "penalty_id": row.get("penalty_id", ""),
+                "penalty_description": str(row.get("penalty_description", "")).strip(),
+                "referenced_by": _to_list_text(row.get("referenced_by")),
+            }
+        )
+    return out
+
+
+def _query_timeline_context(graph: Any, limit: int = 20) -> List[Dict[str, Any]]:
+    rows = graph.query(
+        """
+        MATCH (t:Timeline)-[:IMPLEMENTS]->(a:Article)
+        RETURN t.date_text AS date_text,
+               count(DISTINCT a) AS article_count,
+               collect(DISTINCT a.id)[0..8] AS related_articles
+        ORDER BY date_text
+        LIMIT $limit
+        """,
+        {"limit": int(limit)},
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "date_text": str(row.get("date_text", "")).strip(),
+                "article_count": int(row.get("article_count", 0) or 0),
+                "related_articles": _to_list_text(row.get("related_articles")),
+            }
+        )
+    return out
+
+
+def _build_issue_rows(
+    *,
+    controls: Sequence[Dict[str, Any]],
+    profile: Dict[str, Any],
+    compliance_reqs: Sequence[Dict[str, Any]],
+    graph: Any,
+) -> List[Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    req_by_article: Dict[str, List[str]] = {}
+    for req in compliance_reqs:
+        art = str(req.get("article_id", "")).strip()
+        if not art:
+            continue
+        req_by_article.setdefault(art, []).append(str(req.get("requirement_text", "")))
+
+    issue_idx = 1
+    for control in controls:
+        if control.get("present"):
+            continue
+
+        severity = str(control.get("severity_if_missing", "medium")).lower()
+        if control["id"] in {"transparency_notice", "copyright_training_summary"} and profile.get(
+            "content_generation_detected"
+        ):
+            severity = "high"
+
+        related_articles = list(control.get("related_articles", []))
+        sample_requirements: List[str] = []
+        for article in related_articles:
+            sample_requirements.extend(req_by_article.get(article, []))
+        sample_requirements = sample_requirements[:3]
+
+        obligation_evidence = _query_obligations_by_keywords(
+            graph=graph,
+            keywords=control.get("obligation_keywords", []),
+            limit=5,
+        )
+
+        issues.append(
+            {
+                "issue_id": f"ISS-{issue_idx:02d}",
+                "theme": control.get("title", ""),
+                "severity": severity,
+                "finding": f"문서에서 '{control.get('title', '')}' 관련 근거를 찾지 못했습니다.",
+                "recommended_action": control.get("recommended_action", ""),
+                "related_articles": related_articles,
+                "sample_requirements": sample_requirements,
+                "obligation_evidence": obligation_evidence,
+            }
+        )
+        issue_idx += 1
+
+    return issues
+
+
+def run_c1_assessment(
+    *,
+    graph: Any,
+    customer_text: str,
+    top_k: int = 3,
+) -> Dict[str, Any]:
+    """Run Phase C-1 deterministic assessment for a customer document."""
+    mapped_usecases = map_usecases_by_rules(customer_text, top_k=top_k)
+    controls = detect_document_gaps(customer_text)
+    profile = infer_document_profile(customer_text)
+
+    selected_usecase_ids = [item["usecase_id"] for item in mapped_usecases if item.get("usecase_id")]
+    usecase_context = _query_usecase_context(graph, selected_usecase_ids)
+    compliance_reqs = _query_compliance_requirements(graph)
+    penalty_context = _query_penalty_context(graph)
+    timeline_context = _query_timeline_context(graph)
+
+    issues = _build_issue_rows(
+        controls=controls,
+        profile=profile,
+        compliance_reqs=compliance_reqs,
+        graph=graph,
+    )
+    summary = summarize_risk(controls=controls, mapped_usecases=mapped_usecases)
+
+    key_findings = []
+    if mapped_usecases:
+        top = mapped_usecases[0]
+        key_findings.append(
+            f"Top mapped use-case: {top['usecase_id']} ({top.get('title', '')}), score={top.get('score', 0)}."
+        )
+    if summary["control_missing_count"] > 0:
+        key_findings.append(
+            f"Detected {summary['control_missing_count']} missing controls out of {summary['control_total']}."
+        )
+    if profile.get("content_generation_detected"):
+        key_findings.append("Content-generation signal detected; transparency/copyright controls are high priority.")
+
+    next_actions = [issue["recommended_action"] for issue in issues[:5]]
+    if not next_actions:
+        next_actions = ["핵심 통제 항목은 문서에 포함된 것으로 보입니다. 정기 갱신 절차를 유지하세요."]
+
+    now = datetime.now(timezone.utc).isoformat()
+    report = {
+        "meta": {
+            "generated_at": now,
+            "engine": "c1_rule_based_mvp",
+            "top_k_usecases": int(top_k),
+        },
+        "input": {
+            "char_count": len(customer_text),
+            "text_preview": customer_text[:500],
+            "document_profile": profile,
+        },
+        "mapping": {
+            "candidates": mapped_usecases,
+            "usecase_context": usecase_context,
+        },
+        "checklist": {
+            "controls": controls,
+        },
+        "issues": issues,
+        "evidence": {
+            "compliance_requirements": compliance_reqs[:40],
+            "penalty_context": penalty_context,
+            "timeline_context": timeline_context,
+        },
+        "summary": {
+            **summary,
+            "key_findings": key_findings,
+            "next_actions": next_actions,
+        },
+    }
+    return report
+
+
+def write_c1_report(
+    *,
+    report: Dict[str, Any],
+    json_path: Path,
+    summary_md_path: Path,
+) -> None:
+    """Write C-1 report artifacts."""
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_md_path.parent.mkdir(parents=True, exist_ok=True)
+
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    summary = report.get("summary", {})
+    mapping = report.get("mapping", {})
+    issues = report.get("issues", [])
+    candidates = mapping.get("candidates", [])
+
+    lines = [
+        "# C-1 Customer Compliance Assessment",
+        "",
+        f"- Generated at: `{report.get('meta', {}).get('generated_at', '')}`",
+        f"- Risk level: **{summary.get('risk_level', 'N/A')}**",
+        f"- Risk score: `{summary.get('risk_score', 'N/A')}`",
+        f"- Missing controls: `{summary.get('control_missing_count', 0)}/{summary.get('control_total', 0)}`",
+        "",
+        "## Top UseCase Candidates",
+        "",
+        "| UseCase | Title | Score | Matched Keywords |",
+        "|---|---|---:|---|",
+    ]
+    for item in candidates[:5]:
+        lines.append(
+            f"| {item.get('usecase_id', '')} | {item.get('title', '')} | {item.get('score', 0)} | "
+            f"{', '.join(item.get('matched_keywords', []))} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Missing-Control Issues",
+            "",
+            "| ID | Severity | Theme | Related Articles |",
+            "|---|---|---|---|",
+        ]
+    )
+    for issue in issues:
+        lines.append(
+            f"| {issue.get('issue_id', '')} | {issue.get('severity', '')} | {issue.get('theme', '')} | "
+            f"{', '.join(issue.get('related_articles', []))} |"
+        )
+
+    lines.extend(["", "## Recommended Next Actions", ""])
+    for idx, action in enumerate(summary.get("next_actions", []), start=1):
+        lines.append(f"{idx}. {action}")
+
+    summary_md_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    logger.info("C-1 report saved: %s", json_path)
+    logger.info("C-1 summary saved: %s", summary_md_path)

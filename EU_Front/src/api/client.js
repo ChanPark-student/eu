@@ -1,7 +1,8 @@
-import axios from 'axios';
+﻿import axios from 'axios';
 
-// 기본 백엔드 API 서버 URL (FastAPI)
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
+const rawApiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+const normalizedBase = String(rawApiUrl).replace(/\/+$/, '');
+const API_URL = normalizedBase.endsWith('/api') ? normalizedBase : `${normalizedBase}/api`;
 
 const api = axios.create({
     baseURL: API_URL,
@@ -10,7 +11,6 @@ const api = axios.create({
     },
 });
 
-// 요청 인터셉터: 로컬 스토리지에서 JWT 토큰을 가져와 헤더에 추가
 api.interceptors.request.use(
     (config) => {
         const token = localStorage.getItem('token');
@@ -19,9 +19,7 @@ api.interceptors.request.use(
         }
         return config;
     },
-    (error) => {
-        return Promise.reject(error);
-    }
+    (error) => Promise.reject(error)
 );
 
 export default api;

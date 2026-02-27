@@ -1,0 +1,44 @@
+﻿services:
+  - type: web
+    name: eu-backend
+    env: python
+    plan: free
+    rootDir: EU_Back
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: DATABASE_URL
+        value: sqlite:///./sql_app.db
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: WEB_LAB_RETRIEVER_MODE
+        value: v2
+      - key: WEB_LAB_RETRIEVER_SHADOW
+        value: "false"
+      - key: WEB_LAB_RETRIEVER_PROFILE
+        value: precision_first
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+
+  - type: static
+    name: eu-frontend
+    rootDir: EU_Front
+    plan: free
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: eu-backend
+          property: url
