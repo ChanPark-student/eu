@@ -40,7 +40,10 @@
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        sync: false
+        fromService:
+          type: web
+          name: eu-backend
+          property: host
 
 databases:
   - name: eu-postgres
