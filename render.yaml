@@ -41,13 +41,8 @@
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: eu-backend
-          property: url
+        sync: false
 
-  - type: pserv
-    name: eu-postgres
-    env: postgres
+databases:
+  - name: eu-postgres
     plan: free
-    ipAllowList: []
