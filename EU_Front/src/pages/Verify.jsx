@@ -16,8 +16,9 @@ function Verify() {
 
         setIsAnalyzing(true);
         try {
+            const userQuestion = systemName.trim() || description.trim().slice(0, 300);
             const response = await api.post('/ai/verify', {
-                system_name: systemName.trim() || 'User scenario',
+                system_name: userQuestion,
                 description,
             });
             setResult(response.data);
@@ -50,15 +51,18 @@ function Verify() {
                 <div className="space-y-6">
                     <div>
                         <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">
-                            시스템 이름/질문 (선택)
+                            사용자 질문 (권장)
                         </label>
                         <input
                             type="text"
                             className="w-full px-5 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-shadow"
-                            placeholder="예: 유튜브 숏폼 자동 생성/검수 시나리오"
+                            placeholder="예: 이 문서를 EU AI Act 관점에서 검토하면 어떤 위험이 있나요?"
                             value={systemName}
                             onChange={(e) => setSystemName(e.target.value)}
                         />
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                            비우면 고객 문서 텍스트 앞부분이 자동으로 질문으로 사용됩니다.
+                        </p>
                     </div>
 
                     <div>
