@@ -144,13 +144,67 @@ function Verify() {
                             </div>
 
                             <ul className="space-y-4">
-                                {result.recommendations.map((rec, idx) => (
+                                {(result.recommendations || []).map((rec, idx) => (
                                     <li key={idx} className="flex items-start bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl border border-slate-100 dark:border-slate-700/50">
                                         <CheckCircle2 className="w-5 h-5 text-indigo-500 mt-0.5 mr-3 flex-shrink-0" />
                                         <span className="text-slate-800 dark:text-slate-200">{rec}</span>
                                     </li>
                                 ))}
                             </ul>
+
+                            {Array.isArray(result.key_findings) && result.key_findings.length > 0 && (
+                                <div className="space-y-3">
+                                    <h4 className="text-lg font-semibold text-slate-900 dark:text-white">핵심 설명</h4>
+                                    <ul className="space-y-2">
+                                        {result.key_findings.map((item, idx) => (
+                                            <li key={`finding-${idx}`} className="text-sm text-slate-700 dark:text-slate-300 bg-white/70 dark:bg-slate-900/40 p-3 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                {item}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {Array.isArray(result.issues) && result.issues.length > 0 && (
+                                <div className="space-y-3">
+                                    <h4 className="text-lg font-semibold text-slate-900 dark:text-white">이슈 상세</h4>
+                                    <div className="space-y-3">
+                                        {result.issues.map((issue, idx) => (
+                                            <div key={issue.issue_id || `issue-${idx}`} className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/40 p-4 space-y-2">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="text-xs px-2 py-1 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                                                        {issue.issue_id || `ISSUE-${idx + 1}`}
+                                                    </span>
+                                                    <span className="text-xs px-2 py-1 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+                                                        {(issue.severity || 'unknown').toUpperCase()}
+                                                    </span>
+                                                    {issue.evidence_status && (
+                                                        <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                                                            {issue.evidence_status}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <p className="font-semibold text-slate-900 dark:text-white">{issue.theme || '주제 없음'}</p>
+                                                {Array.isArray(issue.related_articles) && issue.related_articles.length > 0 && (
+                                                    <p className="text-sm text-slate-600 dark:text-slate-300">
+                                                        관련 조항: {issue.related_articles.join(', ')}
+                                                    </p>
+                                                )}
+                                                {issue.finding && (
+                                                    <p className="text-sm text-slate-700 dark:text-slate-200">
+                                                        근거: {issue.finding}
+                                                    </p>
+                                                )}
+                                                {issue.recommended_action && (
+                                                    <p className="text-sm text-slate-700 dark:text-slate-200">
+                                                        조치: {issue.recommended_action}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             <div className="pt-4 flex justify-end">
                                 <button className="text-blue-600 dark:text-blue-400 font-medium hover:underline flex items-center text-sm">
