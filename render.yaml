@@ -10,7 +10,9 @@
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: DATABASE_URL
-        value: sqlite:///./sql_app.db
+        fromDatabase:
+          name: eu-postgres
+          property: connectionString
       - key: OPENAI_MODEL
         value: gpt-4o-mini
       - key: WEB_LAB_RETRIEVER_MODE
@@ -43,3 +45,9 @@
           type: web
           name: eu-backend
           property: url
+
+  - type: pserv
+    name: eu-postgres
+    env: postgres
+    plan: free
+    ipAllowList: []
