@@ -30,8 +30,9 @@
       - key: OPENAI_API_KEY
         sync: false
 
-  - type: static
+  - type: web
     name: eu-frontend
+    env: static
     rootDir: EU_Front
     plan: free
     buildCommand: npm install && npm run build
