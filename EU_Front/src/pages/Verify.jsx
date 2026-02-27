@@ -1,36 +1,30 @@
-import { useState } from 'react';
-import { Upload, ShieldCheck, AlertTriangle, FileText, CheckCircle2 } from 'lucide-react';
+﻿import { useState } from 'react';
+import { ShieldCheck, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import api from '../api/client';
 
 function Verify() {
-    const [file, setFile] = useState(null);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [result, setResult] = useState(null);
     const [systemName, setSystemName] = useState('');
     const [description, setDescription] = useState('');
 
-    const handleFileChange = (e) => {
-        if (e.target.files && e.target.files.length > 0) {
-            setFile(e.target.files[0]);
-        }
-    };
-
     const handleVerify = async () => {
-        if (!systemName || !description) {
-            alert("시스템 이름과 설명을 입력해주세요.");
+        if (!description.trim()) {
+            alert('고객 문서 텍스트를 입력해 주세요.');
             return;
         }
 
         setIsAnalyzing(true);
         try {
             const response = await api.post('/ai/verify', {
-                system_name: systemName,
-                description: description
+                system_name: systemName.trim() || 'User scenario',
+                description,
             });
             setResult(response.data);
         } catch (error) {
-            console.error("Verification failed:", error);
-            alert("검증 과정 중 오류가 발생했습니다.");
+            const detail = error?.response?.data?.detail;
+            console.error('Verification failed:', error?.response?.data || error);
+            alert(detail ? `Verification failed: ${detail}` : 'Verification failed: server error (500).');
         } finally {
             setIsAnalyzing(false);
         }
@@ -38,67 +32,53 @@ function Verify() {
 
     return (
         <div className="max-w-4xl mx-auto space-y-12 animate-fade-in pb-20">
-            {/* Header */}
             <div className="text-center space-y-4">
                 <div className="inline-flex items-center justify-center p-3 bg-blue-100 dark:bg-blue-900/30 rounded-2xl mb-4">
                     <ShieldCheck className="h-10 w-10 text-blue-600 dark:text-blue-400" />
                 </div>
-                <h1 className="text-4xl font-extrabold tracking-tight">EU AI Act <span className="gradient-text">위배 여부 검증</span></h1>
+                <h1 className="text-4xl font-extrabold tracking-tight">
+                    EU AI Act <span className="gradient-text">규제 위험 검증</span>
+                </h1>
                 <p className="text-lg text-slate-600 dark:text-slate-400">
-                    AI 시스템의 세부 정보와 산출물을 제출하여 글로벌 규제 기준에 부합하는지 즉각 확인하세요.
+                    시스템 목적과 고객 문서 텍스트를 기반으로 규제 위험과 조치 항목을 진단합니다.
                 </p>
             </div>
 
-            {/* Input Form */}
             <div className="glass p-8 md:p-12 rounded-3xl space-y-8 relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl -z-10 transform translate-x-1/2 -translate-y-1/2"></div>
 
                 <div className="space-y-6">
                     <div>
-                        <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">AI 시스템 명칭</label>
+                        <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">
+                            시스템 이름/질문 (선택)
+                        </label>
                         <input
                             type="text"
                             className="w-full px-5 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-shadow"
-                            placeholder="예: 안면 인식 기반 출입 통제 시스템"
+                            placeholder="예: 유튜브 숏폼 자동 생성/검수 시나리오"
                             value={systemName}
                             onChange={(e) => setSystemName(e.target.value)}
                         />
                     </div>
 
                     <div>
-                        <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">시스템 목적 및 설명</label>
+                        <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">
+                            고객 문서 텍스트 (필수)
+                        </label>
                         <textarea
-                            rows="4"
-                            className="w-full px-5 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-shadow resize-none"
-                            placeholder="시스템의 주요 기능, 사용되는 데이터의 종류, 대상 사용자 등을 상세히 기입해주세요."
+                            rows="10"
+                            className="w-full px-5 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-shadow resize-y"
+                            placeholder="고객 문서 원문을 그대로 붙여넣으세요. (데이터 종류, 처리 방식, 배포 대상, 운영 정책 등)"
                             value={description}
                             onChange={(e) => setDescription(e.target.value)}
                         ></textarea>
-                    </div>
-
-                    <div>
-                        <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">관련 문서 업로드 (기술 명세서, 데이터 정책 등)</label>
-                        <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-slate-300 dark:border-slate-600 border-dashed rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer relative">
-                            <input
-                                type="file"
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                onChange={handleFileChange}
-                                accept=".pdf,.doc,.docx"
-                            />
-                            <div className="space-y-1 text-center">
-                                <Upload className="mx-auto h-12 w-12 text-slate-400" />
-                                <div className="text-sm text-slate-600 dark:text-slate-400">
-                                    <span className="font-medium text-blue-600 dark:text-blue-400">파일 찾기</span> 또는 드래그 앤 드롭
-                                </div>
-                                <p className="text-xs text-slate-500 flex justify-center gap-1 items-center">
-                                    <FileText className="w-3 h-3" /> {file ? <span className="text-blue-600 font-semibold">{file.name}</span> : "PDF, DOCX 최대 10MB"}
-                                </p>
-                            </div>
-                        </div>
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                            파일 업로드 대신 이 입력칸의 텍스트가 분석에 직접 사용됩니다.
+                        </p>
                     </div>
                 </div>
 
-                <div className="pt-4 flex justify-end gap-4">
+                <div className="pt-2 flex justify-end gap-4">
                     <button
                         onClick={handleVerify}
                         disabled={isAnalyzing}
@@ -107,11 +87,11 @@ function Verify() {
                         {isAnalyzing ? (
                             <>
                                 <span className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full mr-2"></span>
-                                AI 분석 중...
+                                분석 중...
                             </>
                         ) : (
                             <>
-                                <span>규제 위배 검증 시작</span>
+                                <span>규제 적합성 검증 시작</span>
                                 <AlertTriangle className="w-5 h-5 ml-2 opacity-80" />
                             </>
                         )}
@@ -119,7 +99,6 @@ function Verify() {
                 </div>
             </div>
 
-            {/* Verification Result */}
             {result && (
                 <div className="glass p-8 md:p-12 rounded-3xl animate-fade-in relative overflow-hidden border-t-4 border-t-rose-500">
                     <div className="flex flex-col md:flex-row gap-8 items-start">
@@ -205,12 +184,6 @@ function Verify() {
                                     </div>
                                 </div>
                             )}
-
-                            <div className="pt-4 flex justify-end">
-                                <button className="text-blue-600 dark:text-blue-400 font-medium hover:underline flex items-center text-sm">
-                                    상세 리포트 다운로드 (PDF)
-                                </button>
-                            </div>
                         </div>
                     </div>
                 </div>
