@@ -1,0 +1,61 @@
+# =========================
+# EU AI Act Project - Root Gitignore
+# =========================
+
+# Environments
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.venv/
+venv/
+euf/
+eub/
+ENV/
+env.bak/
+venv.bak/
+
+# Project configuration files
+.idea/
+.vscode/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# User specific notes and instructions
+prompts.md
+chan.txt
+git.txt
+
+# =========================
+# Backend (FastAPI / Python)
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+dist/
+build/
+*.sqlite3
+*.db
+sql_app.db
+
+# =========================
+# Frontend (React / Vite / Node)
+# =========================
+node_modules/
+EU_Front/dist/
+EU_Front/build/
+.npm/
