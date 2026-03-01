@@ -41,6 +41,23 @@ def _to_level_text(level: str) -> str:
     return mapping.get(value, "Unknown")
 
 
+def _is_truthy(value: str | None, *, default: bool = False) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return bool(default)
+    return text in {"1", "true", "yes", "on"}
+
+
+def _to_evidence_status_label(status: str) -> str:
+    value = str(status or "").strip().lower()
+    mapping = {
+        "grounded": "근거 확인",
+        "mismatch_downgraded": "정합성 낮음(자동 강등)",
+        "insufficient": "근거 부족(예비 진단)",
+    }
+    return mapping.get(value, status or "")
+
+
 def _build_recommendations(report: Dict[str, Any]) -> List[str]:
     summary = report.get("summary", {}) if isinstance(report, dict) else {}
     issues = report.get("issues", []) if isinstance(report, dict) else []
@@ -83,13 +100,11 @@ def verify_system(request: VerifyRequest, db: Session = Depends(get_db)) -> Veri
 
     model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     retriever_mode = str(os.getenv("WEB_LAB_RETRIEVER_MODE", "v2")).strip().lower() or "v2"
-    retriever_shadow = str(os.getenv("WEB_LAB_RETRIEVER_SHADOW", "false")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    retriever_shadow = _is_truthy(os.getenv("WEB_LAB_RETRIEVER_SHADOW", "false"), default=False)
     retriever_profile = str(os.getenv("WEB_LAB_RETRIEVER_PROFILE", "precision_first")).strip().lower() or "precision_first"
+    friendly_text = _is_truthy(os.getenv("WEB_LAB_FRIENDLY_TEXT", "true"), default=True)
+    article_diversity = _is_truthy(os.getenv("WEB_LAB_ARTICLE_DIVERSITY", "true"), default=True)
+    extended_kg = _is_truthy(os.getenv("WEB_LAB_EXTENDED_KG", "true"), default=True)
 
     customer_text = str(request.description or "").strip()
     user_question = str(request.system_name or "").strip()
@@ -111,6 +126,9 @@ def verify_system(request: VerifyRequest, db: Session = Depends(get_db)) -> Veri
             retriever_mode=retriever_mode,
             retriever_shadow=retriever_shadow,
             retriever_profile=retriever_profile,
+            friendly_text=friendly_text,
+            article_diversity=article_diversity,
+            extended_kg=extended_kg,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Verify pipeline failed: {exc}")
@@ -133,13 +151,20 @@ def verify_system(request: VerifyRequest, db: Session = Depends(get_db)) -> Veri
     for issue in issues[:8]:
         if not isinstance(issue, dict):
             continue
+        evidence_status = str(issue.get("evidence_status", "")).strip()
         issue_rows.append(
             VerifyIssue(
                 issue_id=str(issue.get("issue_id", "")).strip(),
                 theme=str(issue.get("theme", "")).strip(),
                 severity=str(issue.get("severity", "")).strip(),
-                evidence_status=str(issue.get("evidence_status", "")).strip() or None,
+                evidence_status=evidence_status or None,
+                evidence_status_label=_to_evidence_status_label(evidence_status) if evidence_status else None,
                 related_articles=[str(v).strip() for v in (issue.get("related_articles") or []) if str(v).strip()],
+                related_article_briefs=[
+                    str(v).strip() for v in (issue.get("related_article_briefs") or []) if str(v).strip()
+                ],
+                usecase_hints=[str(v).strip() for v in (issue.get("usecase_hints") or []) if str(v).strip()],
+                timeline_hints=[str(v).strip() for v in (issue.get("timeline_hints") or []) if str(v).strip()],
                 finding=str(issue.get("finding", "")).strip(),
                 recommended_action=str(issue.get("recommended_action", "")).strip(),
             )

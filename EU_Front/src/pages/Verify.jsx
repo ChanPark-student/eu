@@ -163,14 +163,35 @@ function Verify() {
                                                     </span>
                                                     {issue.evidence_status && (
                                                         <span className="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                                                            {issue.evidence_status}
+                                                            {issue.evidence_status_label || issue.evidence_status}
                                                         </span>
                                                     )}
                                                 </div>
                                                 <p className="font-semibold text-slate-900 dark:text-white">{issue.theme || '주제 없음'}</p>
-                                                {Array.isArray(issue.related_articles) && issue.related_articles.length > 0 && (
+                                                {Array.isArray(issue.related_article_briefs) && issue.related_article_briefs.length > 0 ? (
+                                                    <div className="text-sm text-slate-600 dark:text-slate-300 space-y-1">
+                                                        <p className="font-medium">관련 조항(요약)</p>
+                                                        <ul className="list-disc list-inside space-y-1">
+                                                            {issue.related_article_briefs.map((brief, briefIdx) => (
+                                                                <li key={`brief-${idx}-${briefIdx}`}>{brief}</li>
+                                                            ))}
+                                                        </ul>
+                                                    </div>
+                                                ) : (
+                                                    Array.isArray(issue.related_articles) && issue.related_articles.length > 0 && (
+                                                        <p className="text-sm text-slate-600 dark:text-slate-300">
+                                                            관련 조항: {issue.related_articles.join(', ')}
+                                                        </p>
+                                                    )
+                                                )}
+                                                {Array.isArray(issue.usecase_hints) && issue.usecase_hints.length > 0 && (
                                                     <p className="text-sm text-slate-600 dark:text-slate-300">
-                                                        관련 조항: {issue.related_articles.join(', ')}
+                                                        연관 사용사례: {issue.usecase_hints.join(', ')}
+                                                    </p>
+                                                )}
+                                                {Array.isArray(issue.timeline_hints) && issue.timeline_hints.length > 0 && (
+                                                    <p className="text-sm text-slate-600 dark:text-slate-300">
+                                                        관련 시행시점: {issue.timeline_hints.join(', ')}
                                                     </p>
                                                 )}
                                                 {issue.finding && (

@@ -69,6 +69,24 @@ KEYWORD_ARTICLE_HINTS: Dict[str, List[str]] = {
     "training data": ["Article 53", "Article 54", "Article 55"],
 }
 
+ARTICLE_BRIEF_MAP: Dict[str, str] = {
+    "Article 2": "적용범위(영역/행위자) 판단 기준",
+    "Article 3": "핵심 용어 정의(시스템/제공자/배포자 등)",
+    "Article 5": "금지된 AI 관행(허용 불가 영역)",
+    "Article 9": "위험관리 체계 수립·운영 의무",
+    "Article 10": "학습/검증/시험 데이터 거버넌스 의무",
+    "Article 11": "기술문서화 의무",
+    "Article 12": "로그/추적성 확보 의무",
+    "Article 13": "사용자 고지·투명성·사용지침 의무",
+    "Article 14": "인간 감독(Human oversight) 의무",
+    "Article 15": "정확도·강건성·보안 의무",
+    "Article 50": "일부 AI 시스템의 투명성 의무",
+    "Article 53": "범용 AI 모델 관련 문서·정보 의무",
+    "Article 54": "범용 AI 모델 제공자 대표자 지정 의무",
+    "Article 55": "범용 AI 모델 제공자 일반 의무",
+}
+GENERIC_HEAVY_ARTICLES = {"Article 12", "Article 13"}
+
 CONTROL_KEYWORD_EXPANSIONS: Dict[str, List[str]] = {
     "biometric": ["data governance", "transparency", "human oversight"],
     "face": ["data governance", "transparency"],
@@ -222,6 +240,85 @@ def _clip(text: str, max_len: int = 180) -> str:
     if len(t) <= max_len:
         return t
     return t[: max_len - 3].rstrip() + "..."
+
+
+def _article_brief(article_id: str) -> str:
+    return str(ARTICLE_BRIEF_MAP.get(str(article_id or "").strip(), "")).strip()
+
+
+def _format_article(article_id: str, include_brief: bool = True) -> str:
+    article = _normalize_article_id(str(article_id or "").strip())
+    if not article:
+        return ""
+    if not include_brief:
+        return article
+    brief = _article_brief(article)
+    if not brief:
+        return article
+    return f"{article}({brief})"
+
+
+def _render_article_refs(
+    article_ids: Sequence[str],
+    *,
+    max_items: int = 3,
+    include_brief: bool = True,
+) -> str:
+    normalized = _dedupe_list([_normalize_article_id(str(v)) for v in article_ids if str(v).strip()])
+    normalized = [v for v in normalized if v][: max(1, int(max_items))]
+    if not normalized:
+        return "관련 조항"
+    rendered = [item for item in (_format_article(v, include_brief=include_brief) for v in normalized) if item]
+    return ", ".join(rendered) if rendered else "관련 조항"
+
+
+def _article_brief_lines(article_ids: Sequence[str], *, max_items: int = 6) -> List[str]:
+    out: List[str] = []
+    normalized = _dedupe_list([_normalize_article_id(str(v)) for v in article_ids if str(v).strip()])
+    for article in normalized[: max(1, int(max_items))]:
+        brief = _article_brief(article)
+        out.append(f"{article}: {brief}" if brief else article)
+    return out
+
+
+def _theme_prefers_generic_articles(theme: str) -> bool:
+    theme_l = str(theme or "").lower()
+    return any(
+        token in theme_l
+        for token in [
+            "동의",
+            "고지",
+            "라벨",
+            "label",
+            "transparency",
+            "disclosure",
+            "consent",
+            "voice",
+            "deepfake",
+            "avatar",
+            "synthetic",
+        ]
+    )
+
+
+def _apply_article_diversity(
+    *,
+    theme: str,
+    article_ids: Sequence[str],
+    enabled: bool = True,
+) -> List[str]:
+    normalized = _dedupe_list([_normalize_article_id(str(v)) for v in article_ids if str(v).strip()])
+    normalized = [v for v in normalized if v]
+    if not enabled or len(normalized) <= 2:
+        return normalized
+    if _theme_prefers_generic_articles(theme):
+        return normalized
+
+    non_generic = [v for v in normalized if v not in GENERIC_HEAVY_ARTICLES]
+    generic = [v for v in normalized if v in GENERIC_HEAVY_ARTICLES]
+    if non_generic:
+        return _dedupe_list(non_generic + generic)
+    return normalized
 
 
 def _tokenize(text: str) -> List[str]:
@@ -922,6 +1019,131 @@ def _query_obligations_by_keywords(graph: Any, keywords: Sequence[str], limit: i
     return out
 
 
+def _query_usecases_by_keywords(graph: Any, keywords: Sequence[str], limit: int = 4) -> List[Dict[str, Any]]:
+    kws = [str(k).strip().lower() for k in keywords if str(k).strip()]
+    if not kws:
+        return []
+    rows = graph.query(
+        """
+        MATCH (u:UseCase)
+        OPTIONAL MATCH (u)-[:CLASSIFIED_AS]->(r:Riskcategory)
+        OPTIONAL MATCH (u)-[:REFERENCES]->(a:Article)
+        WITH u,
+             collect(DISTINCT r.id) AS risk_categories,
+             collect(DISTINCT a.id) AS related_articles,
+             toLower(coalesce(u.id,'')) AS usecase_id_l,
+             toLower(coalesce(u.title,'')) AS title_l,
+             toLower(coalesce(u.annex_point,'')) AS annex_l
+        WITH u, risk_categories, related_articles,
+             reduce(score = 0, kw IN $keywords |
+                score +
+                CASE WHEN title_l CONTAINS kw THEN 3 ELSE 0 END +
+                CASE WHEN usecase_id_l CONTAINS kw THEN 2 ELSE 0 END +
+                CASE WHEN annex_l CONTAINS kw THEN 1 ELSE 0 END
+             ) AS score
+        WHERE score > 0
+        RETURN u.id AS usecase_id,
+               coalesce(u.title,'') AS title,
+               coalesce(u.annex_point,'') AS annex_point,
+               risk_categories[0..4] AS risk_categories,
+               related_articles[0..12] AS related_articles,
+               score
+        ORDER BY score DESC, usecase_id ASC
+        LIMIT $limit
+        """,
+        {"keywords": kws, "limit": int(limit)},
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        usecase_id = str(row.get("usecase_id", "")).strip()
+        if not usecase_id:
+            continue
+        related_articles = _dedupe_list(
+            [
+                _normalize_article_id(str(v))
+                for v in (row.get("related_articles") or [])
+                if str(v).strip()
+            ]
+        )
+        related_articles = [v for v in related_articles if v]
+        out.append(
+            {
+                "usecase_id": usecase_id,
+                "title": str(row.get("title", "")).strip(),
+                "annex_point": str(row.get("annex_point", "")).strip(),
+                "risk_categories": _dedupe_list([str(v).strip() for v in (row.get("risk_categories") or []) if str(v).strip()]),
+                "related_articles": related_articles,
+                "score": int(row.get("score", 0) or 0),
+            }
+        )
+    return out
+
+
+def _query_timeline_by_articles(graph: Any, article_ids: Sequence[str], limit: int = 4) -> List[Dict[str, Any]]:
+    normalized = _dedupe_list([_normalize_article_id(str(v)) for v in article_ids if str(v).strip()])
+    normalized = [v for v in normalized if v]
+    if not normalized:
+        return []
+    rows = graph.query(
+        """
+        MATCH (t:Timeline)-[:IMPLEMENTS]->(a:Article)
+        WHERE a.id IN $article_ids
+        RETURN coalesce(t.date_text,'') AS date_text,
+               count(DISTINCT a) AS matched_article_count,
+               collect(DISTINCT a.id)[0..8] AS related_articles
+        ORDER BY matched_article_count DESC, date_text ASC
+        LIMIT $limit
+        """,
+        {"article_ids": normalized, "limit": int(limit)},
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        date_text = str(row.get("date_text", "")).strip()
+        if not date_text:
+            continue
+        rel_articles = _dedupe_list(
+            [_normalize_article_id(str(v)) for v in (row.get("related_articles") or []) if str(v).strip()]
+        )
+        rel_articles = [v for v in rel_articles if v]
+        out.append(
+            {
+                "date_text": date_text,
+                "matched_article_count": int(row.get("matched_article_count", 0) or 0),
+                "related_articles": rel_articles,
+            }
+        )
+    return out
+
+
+def _summarize_usecase_hints(usecases: Sequence[Mapping[str, Any]], max_items: int = 2) -> List[str]:
+    out: List[str] = []
+    for item in list(usecases)[: max(1, int(max_items))]:
+        usecase_id = str(item.get("usecase_id", "")).strip()
+        title = str(item.get("title", "")).strip()
+        annex = str(item.get("annex_point", "")).strip()
+        if usecase_id and title and annex:
+            out.append(f"{usecase_id}({title}, Annex {annex})")
+        elif usecase_id and title:
+            out.append(f"{usecase_id}({title})")
+        elif usecase_id:
+            out.append(usecase_id)
+    return _dedupe_list(out)
+
+
+def _summarize_timeline_hints(timelines: Sequence[Mapping[str, Any]], max_items: int = 2) -> List[str]:
+    out: List[str] = []
+    for item in list(timelines)[: max(1, int(max_items))]:
+        date_text = str(item.get("date_text", "")).strip()
+        matched = int(item.get("matched_article_count", 0) or 0)
+        if not date_text:
+            continue
+        if matched > 0:
+            out.append(f"{date_text} (연결 조항 {matched}개)")
+        else:
+            out.append(date_text)
+    return _dedupe_list(out)
+
+
 def _build_kg_paths(
     *,
     related_articles: Sequence[str],
@@ -1041,6 +1263,7 @@ def _build_grounded_finding(
     evidence_status: str = "grounded",
     expected_labels: Sequence[str] | None = None,
     matched_labels: Sequence[str] | None = None,
+    friendly_text: bool = True,
 ) -> str:
     safe_theme = _normalize_theme(theme)
     articles = [str(v).strip() for v in related_articles if str(v).strip()]
@@ -1050,10 +1273,10 @@ def _build_grounded_finding(
 
     if evidence_status == "mismatch_downgraded":
         controls = ", ".join(expected_labels[:2]) if expected_labels else "핵심 통제"
-        article_hint = ", ".join(articles[:3]) if articles else "관련 조항"
+        article_hint = _render_article_refs(articles, max_items=3, include_brief=friendly_text)
         return (
             f"{signal_hint}'{safe_theme}' 정황은 감지됐지만, "
-            "현재 KG 근거와 이슈 설명의 직접 일치도가 낮아 예비 경고로 자동 강등했습니다. "
+            "현재 근거와 설명의 직접 일치도가 낮아 예비 경고로 자동 강등했습니다. "
             f"{article_hint} 기준으로 {controls} 항목부터 사실관계를 보강해 재진단하세요."
         )
 
@@ -1065,11 +1288,15 @@ def _build_grounded_finding(
             ]
         )
         labels = [v for v in labels if v]
-        article_hint = ", ".join(_dedupe_list([str(item.get("article_id", "")).strip() for item in requirement_evidence[:3]])[:3])
+        article_hint = _render_article_refs(
+            _dedupe_list([str(item.get("article_id", "")).strip() for item in requirement_evidence[:3]])[:3],
+            max_items=3,
+            include_brief=friendly_text,
+        )
         if labels:
             return (
                 f"{signal_hint}'{safe_theme}' 위험이 있습니다. "
-                f"KG에서 {article_hint or ', '.join(articles[:3])} 기준으로 "
+                f"{article_hint or _render_article_refs(articles, max_items=3, include_brief=friendly_text)} 기준으로 "
                 f"{', '.join(labels[:2])}이 확인되었습니다."
             )
     if obligation_evidence:
@@ -1082,7 +1309,7 @@ def _build_grounded_finding(
         ]
         snippets = [s for s in snippets if s]
         if snippets:
-            joined = ", ".join(articles[:3]) or "관련 조항"
+            joined = _render_article_refs(articles, max_items=3, include_brief=friendly_text)
             return (
                 f"{signal_hint}'{safe_theme}' 위험이 있습니다. "
                 f"{joined} 기준 의무로 {', '.join(snippets[:2])}이 확인되었습니다."
@@ -1090,10 +1317,10 @@ def _build_grounded_finding(
     if articles:
         return (
             f"{signal_hint}'{safe_theme}' 관련 조항은 확인됐지만 "
-            f"직접 연결된 세부 요건은 제한적입니다 (관련 조항: {', '.join(articles[:4])})."
+            f"직접 연결된 세부 요건은 제한적입니다 (관련 조항: {_render_article_refs(articles, max_items=4, include_brief=friendly_text)})."
         )
     return (
-        f"{signal_hint}'{safe_theme}' 이슈는 KG에서 충분한 조항 근거를 찾지 못했습니다. "
+        f"{signal_hint}'{safe_theme}' 이슈는 충분한 조항 근거를 찾지 못했습니다. "
         "현재 결과는 예비 진단으로 보고, 사실관계를 보강한 뒤 재진단하세요."
     )
 
@@ -1106,6 +1333,7 @@ def _build_grounded_action(
     obligation_evidence: Sequence[Mapping[str, Any]],
     evidence_status: str = "grounded",
     expected_labels: Sequence[str] | None = None,
+    friendly_text: bool = True,
 ) -> str:
     safe_theme = _normalize_theme(theme)
     articles = [str(v).strip() for v in related_articles if str(v).strip()]
@@ -1131,7 +1359,8 @@ def _build_grounded_action(
         req_label = _summarize_requirement_ko(str(first.get("req_text", "")).strip(), str(first.get("req_id", "")).strip())
         action_hint = _action_hint_from_label(req_label)
         if article and req_label:
-            return f"'{safe_theme}' 대응으로 {article}의 '{req_label}'을 우선 적용하세요. {action_hint}"
+            article_ref = _render_article_refs([article], max_items=1, include_brief=friendly_text)
+            return f"'{safe_theme}' 대응으로 {article_ref}의 '{req_label}'을 우선 적용하세요. {action_hint}"
     if obligation_evidence:
         first = obligation_evidence[0]
         label = _summarize_requirement_ko(
@@ -1139,11 +1368,11 @@ def _build_grounded_action(
             str(first.get("obligation_id", "")).strip(),
         )
         if label:
-            base = ", ".join(articles[:3]) if articles else "관련 AI Act 조항"
+            base = _render_article_refs(articles, max_items=3, include_brief=friendly_text) if articles else "관련 AI Act 조항"
             return f"'{safe_theme}' 대응으로 {base} 기준 '{label}' 통제를 우선 이행하세요. {_action_hint_from_label(label)}"
     if articles:
         return (
-            f"'{safe_theme}' 대응으로 {', '.join(articles[:3])} 기준 통제를 우선 정리하세요. "
+            f"'{safe_theme}' 대응으로 {_render_article_refs(articles, max_items=3, include_brief=friendly_text)} 기준 통제를 우선 정리하세요. "
             "문서화, 로그/추적성, 투명성, 데이터 거버넌스 항목부터 반영하면 됩니다."
         )
     return "근거가 충분하지 않습니다. 시나리오 사실관계를 보강한 뒤 리트리버를 다시 실행하세요."
@@ -1241,6 +1470,9 @@ def run_intent_rag_assessment(
     retriever_mode: str = "v2",
     retriever_shadow: bool = False,
     retriever_profile: str = "precision_first",
+    friendly_text: bool = True,
+    article_diversity: bool = True,
+    extended_kg: bool = True,
 ) -> Dict[str, Any]:
     """Run LLM intent parsing + KG retrieval + grounded response generation."""
     question = str(user_question or "").strip()
@@ -1306,6 +1538,7 @@ def run_intent_rag_assessment(
         issue_retrieval_debug: Dict[str, Any] = {}
         evidence_confidence = 0.0
         primary_evidence_type = "requirement"
+        usecase_candidates: List[Dict[str, Any]] = []
 
         if mode == "v2":
             expected_codes = _expected_control_codes(
@@ -1372,6 +1605,32 @@ def run_intent_rag_assessment(
                 },
                 "thresholds": {"final_threshold": 0.0, "low_alignment_path_floor": 0.30},
             }
+        if extended_kg:
+            usecase_candidates = _query_usecases_by_keywords(
+                graph=graph,
+                keywords=[theme] + effective_keywords + trigger_terms,
+                limit=4,
+            )
+        else:
+            usecase_candidates = []
+        usecase_articles = _dedupe_list(
+            [
+                str(v).strip()
+                for item in usecase_candidates
+                for v in (item.get("related_articles") or [])
+                if str(v).strip()
+            ]
+        )
+        all_related_articles = _dedupe_list(all_related_articles + usecase_articles)
+        all_related_articles = _apply_article_diversity(
+            theme=theme,
+            article_ids=all_related_articles,
+            enabled=bool(article_diversity),
+        )
+        channel_hits = issue_retrieval_debug.get("channel_hits", {}) if isinstance(issue_retrieval_debug, Mapping) else {}
+        if isinstance(channel_hits, Mapping):
+            issue_retrieval_debug = dict(issue_retrieval_debug)
+            issue_retrieval_debug["channel_hits"] = {**dict(channel_hits), "usecases": int(len(usecase_candidates))}
 
         normalized_issues.append(
             {
@@ -1388,6 +1647,8 @@ def run_intent_rag_assessment(
                 "retrieval_debug": issue_retrieval_debug,
                 "evidence_confidence": float(evidence_confidence),
                 "primary_evidence_type": primary_evidence_type,
+                "usecase_candidates": usecase_candidates,
+                "usecase_hints": _summarize_usecase_hints(usecase_candidates, max_items=3),
             }
         )
         retrieval_debug_rows.append(issue_retrieval_debug)
@@ -1454,6 +1715,13 @@ def run_intent_rag_assessment(
         supported_articles = [article_id for article_id in merged_articles if _has_article_evidence(article_context.get(article_id))]
         if not supported_articles:
             supported_articles = requirement_articles[:]
+        timeline_evidence = _query_timeline_by_articles(graph=graph, article_ids=supported_articles, limit=4) if extended_kg else []
+        timeline_hints = _summarize_timeline_hints(timeline_evidence, max_items=2) if extended_kg else []
+        supported_articles = _apply_article_diversity(
+            theme=str(item.get("theme", "")),
+            article_ids=supported_articles,
+            enabled=bool(article_diversity),
+        )
         alignment = _evaluate_evidence_alignment(
             theme=str(item.get("theme", "")),
             retrieval_keywords=list(item.get("retrieval_keywords", [])),
@@ -1506,6 +1774,7 @@ def run_intent_rag_assessment(
             evidence_status=evidence_status,
             expected_labels=list(alignment.get("expected_labels", [])),
             matched_labels=list(alignment.get("matched_labels", [])),
+            friendly_text=bool(friendly_text),
         )
         recommended_action = _build_grounded_action(
             theme=str(item.get("theme", "")),
@@ -1514,6 +1783,7 @@ def run_intent_rag_assessment(
             obligation_evidence=obligation_evidence,
             evidence_status=evidence_status,
             expected_labels=list(alignment.get("expected_labels", [])),
+            friendly_text=bool(friendly_text),
         )
         primary_control_label = ""
         if requirement_evidence:
@@ -1534,6 +1804,7 @@ def run_intent_rag_assessment(
                 "severity": effective_severity,
                 "risk_points": effective_risk_points,
                 "related_articles": supported_articles,
+                "related_article_briefs": _article_brief_lines(supported_articles, max_items=6),
                 "evidence_status": evidence_status if grounded else "insufficient",
                 "evidence_confidence": float(item.get("evidence_confidence", 0.0) or 0.0),
                 "primary_evidence_type": str(item.get("primary_evidence_type", "requirement") or "requirement"),
@@ -1547,6 +1818,9 @@ def run_intent_rag_assessment(
                 "requirement_evidence": requirement_evidence,
                 "obligation_evidence": obligation_evidence,
                 "kg_paths": kg_paths,
+                "usecase_hints": [str(v).strip() for v in (item.get("usecase_hints") or []) if str(v).strip()],
+                "timeline_hints": timeline_hints,
+                "timeline_evidence": timeline_evidence,
             }
         )
 
@@ -1584,6 +1858,7 @@ def run_intent_rag_assessment(
         "lexical_obligations": 0,
         "lexical_articles": 0,
         "graph_path_articles": 0,
+        "usecases": 0,
     }
     selected_totals = {
         "requirements": 0,
@@ -1599,6 +1874,7 @@ def run_intent_rag_assessment(
         channel_totals["lexical_obligations"] += int(channel.get("lexical_obligations", 0) or 0)
         channel_totals["lexical_articles"] += int(channel.get("lexical_articles", 0) or 0)
         channel_totals["graph_path_articles"] += int(channel.get("graph_path_articles", 0) or 0)
+        channel_totals["usecases"] += int(channel.get("usecases", 0) or 0)
         selected_totals["requirements"] += int(selected.get("requirements", 0) or 0)
         selected_totals["obligations"] += int(selected.get("obligations", 0) or 0)
         selected_totals["related_articles"] += int(selected.get("related_articles", 0) or 0)
@@ -1621,6 +1897,9 @@ def run_intent_rag_assessment(
             "retriever_version": "intent_retriever_v2" if mode == "v2" else "intent_retriever_v1",
             "retriever_profile": profile,
             "retriever_shadow_enabled": shadow_enabled,
+            "friendly_text_enabled": bool(friendly_text),
+            "article_diversity_enabled": bool(article_diversity),
+            "extended_kg_enabled": bool(extended_kg),
             "retrieval_debug": retrieval_debug,
             "shadow_diff_path": None,
         },

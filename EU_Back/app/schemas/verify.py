@@ -15,7 +15,11 @@ class VerifyIssue(BaseModel):
     theme: str
     severity: str
     evidence_status: Optional[str] = None
+    evidence_status_label: Optional[str] = None
     related_articles: List[str] = Field(default_factory=list)
+    related_article_briefs: List[str] = Field(default_factory=list)
+    usecase_hints: List[str] = Field(default_factory=list)
+    timeline_hints: List[str] = Field(default_factory=list)
     finding: str = ""
     recommended_action: str = ""
 
