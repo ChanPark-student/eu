@@ -17,6 +17,10 @@ from src.intent_retriever_v2 import retrieve_issue_evidence_v2
 
 
 ARTICLE_ID_RE = re.compile(r"^article\s+(\d+)$", re.IGNORECASE)
+ARTICLE_INLINE_RE = re.compile(
+    r"(?:article|art\.?)\s*(\d{1,3})(?:\s*[-~to]+\s*(\d{1,3}))?",
+    re.IGNORECASE,
+)
 
 KEYWORD_ARTICLE_HINTS: Dict[str, List[str]] = {
     "eu": ["Article 2", "Article 3"],
@@ -67,12 +71,33 @@ KEYWORD_ARTICLE_HINTS: Dict[str, List[str]] = {
     "branding": ["Article 12", "Article 13"],
     "copyright": ["Article 53", "Article 54", "Article 55"],
     "training data": ["Article 53", "Article 54", "Article 55"],
+    "gpai": ["Article 51", "Article 52", "Article 53", "Article 54", "Article 55"],
+    "general-purpose ai": ["Article 51", "Article 52", "Article 53", "Article 54", "Article 55"],
+    "foundation model": ["Article 51", "Article 52", "Article 53", "Article 54", "Article 55"],
+    "high-risk": ["Article 6"],
+    "high risk": ["Article 6"],
+    "annex iii": ["Article 6"],
+    "annex 3": ["Article 6"],
+    "prohibited": ["Article 5"],
+    "unacceptable risk": ["Article 5"],
+    "social scoring": ["Article 5"],
+    "subliminal": ["Article 5"],
+    "manipulative": ["Article 5"],
+    "right to explanation": ["Article 86"],
+    "explanation request": ["Article 86"],
+    "appeal": ["Article 86"],
+    "contest decision": ["Article 86"],
+    "penalty": ["Article 99"],
+    "administrative fine": ["Article 99"],
+    "fine": ["Article 99"],
+    "sanction": ["Article 99"],
 }
 
 ARTICLE_BRIEF_MAP: Dict[str, str] = {
     "Article 2": "적용범위(영역/행위자) 판단 기준",
     "Article 3": "핵심 용어 정의(시스템/제공자/배포자 등)",
     "Article 5": "금지된 AI 관행(허용 불가 영역)",
+    "Article 6": "고위험 AI 분류 기준(Annex III 연계)",
     "Article 9": "위험관리 체계 수립·운영 의무",
     "Article 10": "학습/검증/시험 데이터 거버넌스 의무",
     "Article 11": "기술문서화 의무",
@@ -81,11 +106,27 @@ ARTICLE_BRIEF_MAP: Dict[str, str] = {
     "Article 14": "인간 감독(Human oversight) 의무",
     "Article 15": "정확도·강건성·보안 의무",
     "Article 50": "일부 AI 시스템의 투명성 의무",
+    "Article 51": "범용 AI 모델 분류 기준",
+    "Article 52": "범용 AI 모델 제공자 관련 기본 의무",
     "Article 53": "범용 AI 모델 관련 문서·정보 의무",
     "Article 54": "범용 AI 모델 제공자 대표자 지정 의무",
     "Article 55": "범용 AI 모델 제공자 일반 의무",
+    "Article 86": "자동화 판단 관련 설명 요청권",
+    "Article 99": "행정벌/과징금(제재) 기준",
 }
 GENERIC_HEAVY_ARTICLES = {"Article 12", "Article 13"}
+ANCHOR_PRIORITY_ARTICLES = {
+    "Article 5",
+    "Article 6",
+    "Article 50",
+    "Article 51",
+    "Article 52",
+    "Article 53",
+    "Article 54",
+    "Article 55",
+    "Article 86",
+    "Article 99",
+}
 
 CONTROL_KEYWORD_EXPANSIONS: Dict[str, List[str]] = {
     "biometric": ["data governance", "transparency", "human oversight"],
@@ -255,6 +296,38 @@ AI_ACT_HYBRID_SIGNAL_RULES: List[Dict[str, Any]] = [
         "keywords": ["race", "ethnicity", "인종", "민족", "demographic", "민감속성"],
         "retrieval_keywords": ["sensitive attribute", "biometric categorisation", "data governance", "accuracy"],
     },
+    {
+        "id": "high_risk_classification_annex",
+        "theme": "고위험 AI 분류(Annex III) 적용 리스크",
+        "severity": "high",
+        "risk_points": 20,
+        "keywords": ["high-risk", "high risk", "annex iii", "annex 3", "critical infrastructure", "law enforcement"],
+        "retrieval_keywords": ["high-risk classification", "annex iii", "risk management", "human oversight"],
+    },
+    {
+        "id": "gpai_provider_obligations",
+        "theme": "범용 AI(GPAI) 제공자 의무 리스크",
+        "severity": "high",
+        "risk_points": 20,
+        "keywords": ["gpai", "general-purpose ai", "foundation model", "model card", "systemic risk model"],
+        "retrieval_keywords": ["gpai obligations", "copyright", "training-data summary", "article 51", "article 55"],
+    },
+    {
+        "id": "right_to_explanation_user_claim",
+        "theme": "자동화 판단 설명요청권 대응 리스크",
+        "severity": "medium",
+        "risk_points": 14,
+        "keywords": ["right to explanation", "explanation request", "appeal", "contest decision", "설명 요청"],
+        "retrieval_keywords": ["right to explanation", "user transparency", "human oversight", "article 86"],
+    },
+    {
+        "id": "penalty_enforcement_risk",
+        "theme": "제재/벌금 노출 리스크",
+        "severity": "medium",
+        "risk_points": 13,
+        "keywords": ["penalty", "fine", "sanction", "administrative fine", "벌금", "과징금", "제재"],
+        "retrieval_keywords": ["penalties", "enforcement", "article 99", "non-compliance"],
+    },
 ]
 
 
@@ -386,6 +459,24 @@ def _apply_article_diversity(
     if non_generic:
         return _dedupe_list(non_generic + generic)
     return normalized
+
+
+def _cap_related_articles(
+    *,
+    article_ids: Sequence[str],
+    mandatory_articles: Sequence[str],
+    max_items: int = 4,
+) -> List[str]:
+    normalized = _dedupe_list([_normalize_article_id(str(v)) for v in article_ids if str(v).strip()])
+    normalized = [v for v in normalized if v]
+    if not normalized:
+        return []
+    mandatory_set = {v for v in _dedupe_list([_normalize_article_id(str(v)) for v in mandatory_articles if str(v).strip()]) if v}
+    if mandatory_set:
+        mandatory_first = [v for v in normalized if v in mandatory_set][:3]
+        others = [v for v in normalized if v not in mandatory_set][: max(0, int(max_items) - len(mandatory_first))]
+        return _dedupe_list((mandatory_first + others)[: max(1, int(max_items))])
+    return normalized[: max(1, int(max_items))]
 
 
 def _tokenize(text: str) -> List[str]:
@@ -524,6 +615,16 @@ def _control_label_from_code(code: str) -> str:
 
 def _theme_priority_control_codes(theme: str) -> List[str]:
     theme_l = str(theme or "").lower()
+    if any(k in theme_l for k in ["gpai", "범용 ai", "범용", "general-purpose", "foundation model"]):
+        return ["copyright", "traceability", "transparency", "instructions", "generic"]
+    if any(k in theme_l for k in ["벌금", "과징금", "제재", "penalty", "fine", "sanction"]):
+        return ["generic", "traceability", "transparency", "instructions"]
+    if any(k in theme_l for k in ["설명요청", "설명 요청", "right to explanation", "explanation"]):
+        return ["generic", "transparency", "oversight", "traceability"]
+    if any(k in theme_l for k in ["고위험", "high-risk", "high risk", "annex iii", "annex 3"]):
+        return ["risk_management", "data_governance", "oversight", "traceability", "generic"]
+    if any(k in theme_l for k in ["금지", "prohibited", "unacceptable risk", "social scoring"]):
+        return ["sensitive_attr", "generic", "oversight", "transparency"]
     if any(k in theme_l for k in ["고용", "채용", "employment", "recruit", "hiring"]):
         return ["oversight", "accuracy", "traceability", "instructions", "data_governance", "transparency"]
     if any(k in theme_l for k in ["생체", "biometric", "face"]):
@@ -578,7 +679,7 @@ def _evidence_control_codes(
     for item in requirement_evidence[:6]:
         label = _summarize_requirement_ko(str(item.get("req_text", "")), str(item.get("req_id", "")))
         code = _control_code_from_label(label)
-        if code and code != "generic":
+        if code:
             out.append(code)
     for item in obligation_evidence[:4]:
         label = _summarize_requirement_ko(
@@ -586,7 +687,7 @@ def _evidence_control_codes(
             str(item.get("obligation_id", "")).strip(),
         )
         code = _control_code_from_label(label)
-        if code and code != "generic":
+        if code:
             out.append(code)
     return _dedupe_list(out)
 
@@ -992,6 +1093,81 @@ def _keyword_article_candidates(keywords: Sequence[str]) -> List[str]:
     return _dedupe_list(out)
 
 
+def _extract_explicit_article_mentions(*texts: str, max_article: int = 120) -> List[str]:
+    out: List[str] = []
+    for text in texts:
+        bag = str(text or "")
+        for m in ARTICLE_INLINE_RE.finditer(bag):
+            try:
+                start = int(m.group(1))
+            except Exception:
+                continue
+            end_raw = str(m.group(2) or "").strip()
+            if not (1 <= start <= int(max_article)):
+                continue
+            if end_raw:
+                try:
+                    end = int(end_raw)
+                except Exception:
+                    end = start
+                lo, hi = min(start, end), max(start, end)
+                if 1 <= lo <= int(max_article) and 1 <= hi <= int(max_article) and (hi - lo) <= 10:
+                    out.extend([f"Article {v}" for v in range(lo, hi + 1)])
+                    continue
+            out.append(f"Article {start}")
+    return _dedupe_list([_normalize_article_id(v) for v in out if _normalize_article_id(v)])
+
+
+def _derive_mandatory_articles(
+    *,
+    theme: str,
+    retrieval_keywords: Sequence[str],
+    trigger_terms: Sequence[str],
+    hint_articles: Sequence[str],
+    query_articles: Sequence[str],
+    usecase_candidates: Sequence[Mapping[str, Any]],
+) -> List[str]:
+    texts = [str(theme or "")] + [str(v or "") for v in retrieval_keywords] + [str(v or "") for v in trigger_terms]
+    bag = " ".join(texts).lower()
+    mandatory: List[str] = []
+
+    # Explicit user mentions (e.g., "Article 86", "Art.51-55") should always be preserved.
+    mandatory.extend(_extract_explicit_article_mentions(*texts))
+
+    axis_rules: List[tuple[List[str], List[str]]] = [
+        (["prohibited", "unacceptable risk", "social scoring", "subliminal", "manipulative"], ["Article 5"]),
+        (["high-risk", "high risk", "annex iii", "annex 3", "critical infrastructure"], ["Article 6"]),
+        (["gpai", "general-purpose ai", "foundation model", "systemic risk model"], ["Article 51", "Article 52", "Article 53", "Article 54", "Article 55"]),
+        (["right to explanation", "explanation request", "appeal", "contest decision", "설명 요청"], ["Article 86"]),
+        (["penalty", "fine", "sanction", "administrative fine", "벌금", "과징금", "제재"], ["Article 99"]),
+    ]
+    for keys, article_ids in axis_rules:
+        if any(k in bag for k in keys):
+            mandatory.extend(article_ids)
+
+    # Annex/high-risk use-case evidence should map back to Art.6 classification axis.
+    for item in usecase_candidates:
+        if not isinstance(item, Mapping):
+            continue
+        annex_point = str(item.get("annex_point", "")).strip()
+        risk_categories = [str(v).strip().lower() for v in (item.get("risk_categories") or []) if str(v).strip()]
+        if annex_point or any("high-risk" in v or "high risk" in v for v in risk_categories):
+            mandatory.append("Article 6")
+
+    normalized = _dedupe_list([_normalize_article_id(v) for v in mandatory if _normalize_article_id(v)])
+    if not normalized:
+        return []
+
+    def _article_sort_key(article_id: str) -> tuple[int, str]:
+        m = ARTICLE_ID_RE.match(str(article_id or ""))
+        if not m:
+            return (9999, str(article_id))
+        return (int(m.group(1)), str(article_id))
+
+    normalized.sort(key=_article_sort_key)
+    return normalized[:10]
+
+
 def _query_articles_by_keywords(graph: Any, keywords: Sequence[str], limit: int = 20) -> List[str]:
     kws = [str(k).strip().lower() for k in keywords if str(k).strip()]
     if not kws:
@@ -1379,6 +1555,7 @@ def _has_article_evidence(context: Mapping[str, List[str]] | None) -> bool:
         (context.get("obligations") or [])
         or (context.get("penalties") or [])
         or (context.get("requirements") or [])
+        or (context.get("referenced_by") or [])
     )
 
 
@@ -1765,13 +1942,36 @@ def run_intent_rag_assessment(
         # Do not trust LLM-proposed articles. Build candidates from retrieval only.
         hint_articles = _keyword_article_candidates(effective_keywords + trigger_terms)
         query_articles = _query_articles_by_keywords(graph=graph, keywords=effective_keywords + trigger_terms, limit=20)
+        if extended_kg:
+            usecase_candidates: List[Dict[str, Any]] = _query_usecases_by_keywords(
+                graph=graph,
+                keywords=[theme] + effective_keywords + trigger_terms,
+                limit=4,
+            )
+        else:
+            usecase_candidates = []
+        usecase_articles = _dedupe_list(
+            [
+                str(v).strip()
+                for candidate in usecase_candidates
+                for v in (candidate.get("related_articles") or [])
+                if str(v).strip()
+            ]
+        )
+        mandatory_articles = _derive_mandatory_articles(
+            theme=theme,
+            retrieval_keywords=effective_keywords,
+            trigger_terms=trigger_terms,
+            hint_articles=hint_articles,
+            query_articles=query_articles,
+            usecase_candidates=usecase_candidates,
+        )
         requirement_hits: List[Dict[str, Any]] = []
         obligation_hits: List[Dict[str, Any]] = []
         retrieval_trace: List[Dict[str, Any]] = []
         issue_retrieval_debug: Dict[str, Any] = {}
         evidence_confidence = 0.0
         primary_evidence_type = "requirement"
-        usecase_candidates: List[Dict[str, Any]] = []
 
         if mode == "v2":
             expected_codes = _expected_control_codes(
@@ -1788,6 +1988,7 @@ def run_intent_rag_assessment(
                 summarize_requirement_ko=_summarize_requirement_ko,
                 control_code_from_label=_control_code_from_label,
                 is_noisy_requirement=_is_noisy_requirement,
+                mandatory_articles=mandatory_articles,
             )
             requirement_hits = [
                 dict(v) for v in (v2_result.get("requirement_evidence") or []) if isinstance(v, Mapping)
@@ -1838,27 +2039,16 @@ def run_intent_rag_assessment(
                 },
                 "thresholds": {"final_threshold": 0.0, "low_alignment_path_floor": 0.30},
             }
-        if extended_kg:
-            usecase_candidates = _query_usecases_by_keywords(
-                graph=graph,
-                keywords=[theme] + effective_keywords + trigger_terms,
-                limit=4,
-            )
-        else:
-            usecase_candidates = []
-        usecase_articles = _dedupe_list(
-            [
-                str(v).strip()
-                for item in usecase_candidates
-                for v in (item.get("related_articles") or [])
-                if str(v).strip()
-            ]
-        )
         all_related_articles = _dedupe_list(all_related_articles + usecase_articles)
         all_related_articles = _apply_article_diversity(
             theme=theme,
             article_ids=all_related_articles,
             enabled=bool(article_diversity),
+        )
+        all_related_articles = _cap_related_articles(
+            article_ids=all_related_articles,
+            mandatory_articles=mandatory_articles,
+            max_items=4,
         )
         channel_hits = issue_retrieval_debug.get("channel_hits", {}) if isinstance(issue_retrieval_debug, Mapping) else {}
         if isinstance(channel_hits, Mapping):
@@ -1881,6 +2071,7 @@ def run_intent_rag_assessment(
                 "evidence_confidence": float(evidence_confidence),
                 "primary_evidence_type": primary_evidence_type,
                 "usecase_candidates": usecase_candidates,
+                "mandatory_articles": mandatory_articles,
                 "usecase_hints": _summarize_usecase_hints(usecase_candidates, max_items=3),
             }
         )
@@ -1894,11 +2085,13 @@ def run_intent_rag_assessment(
     all_articles: List[str] = []
     for item in normalized_issues:
         all_articles.extend(item.get("related_articles", []))
+        all_articles.extend(item.get("mandatory_articles", []))
     article_context = _query_article_context(graph=graph, article_ids=_dedupe_list(all_articles))
 
     enriched_issues: List[Dict[str, Any]] = []
     for item in normalized_issues:
         related_articles = [str(v).strip() for v in (item.get("related_articles") or []) if str(v).strip()]
+        mandatory_articles = [str(v).strip() for v in (item.get("mandatory_articles") or []) if str(v).strip()]
         if mode == "v2":
             obligation_evidence = [
                 dict(v) for v in (item.get("obligation_candidates") or []) if isinstance(v, Mapping)
@@ -1948,12 +2141,27 @@ def run_intent_rag_assessment(
         supported_articles = [article_id for article_id in merged_articles if _has_article_evidence(article_context.get(article_id))]
         if not supported_articles:
             supported_articles = requirement_articles[:]
+        if not supported_articles and mandatory_articles:
+            mandatory_supported = [
+                article_id
+                for article_id in _dedupe_list(mandatory_articles)
+                if _has_article_evidence(article_context.get(article_id))
+            ]
+            if mandatory_supported:
+                supported_articles = mandatory_supported[:]
+            else:
+                supported_articles = _dedupe_list(mandatory_articles)[:3]
         timeline_evidence = _query_timeline_by_articles(graph=graph, article_ids=supported_articles, limit=4) if extended_kg else []
         timeline_hints = _summarize_timeline_hints(timeline_evidence, max_items=2) if extended_kg else []
         supported_articles = _apply_article_diversity(
             theme=str(item.get("theme", "")),
             article_ids=supported_articles,
             enabled=bool(article_diversity),
+        )
+        supported_articles = _cap_related_articles(
+            article_ids=supported_articles,
+            mandatory_articles=mandatory_articles,
+            max_items=4,
         )
         alignment = _evaluate_evidence_alignment(
             theme=str(item.get("theme", "")),
