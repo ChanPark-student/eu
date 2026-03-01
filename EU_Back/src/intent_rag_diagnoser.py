@@ -114,7 +114,7 @@ ARTICLE_BRIEF_MAP: Dict[str, str] = {
     "Article 86": "자동화 판단 관련 설명 요청권",
     "Article 99": "행정벌/과징금(제재) 기준",
 }
-GENERIC_HEAVY_ARTICLES = {"Article 12", "Article 13"}
+GENERIC_HEAVY_ARTICLES = {"Article 10", "Article 12", "Article 13", "Article 14", "Article 15"}
 ANCHOR_PRIORITY_ARTICLES = {
     "Article 5",
     "Article 6",
@@ -479,6 +479,92 @@ def _cap_related_articles(
     return normalized[: max(1, int(max_items))]
 
 
+LEGAL_STATE_EDUCATION_TERMS = (
+    "education", "educational", "school", "student", "admission", "placement", "learning", "exam", "assessment",
+    "교육", "학교", "학생", "입학", "배치", "학습", "평가", "시험", "진로",
+)
+LEGAL_STATE_WORKPLACE_TERMS = ("workplace", "employee", "employment", "worker", "직장", "고용", "근로", "직원")
+LEGAL_STATE_EMOTION_TERMS = (
+    "emotion", "emotional", "sentiment", "affect", "mood", "facial expression", "emotion inference",
+    "감정", "정서", "표정", "감정 추론", "감정추론", "표정 분석",
+)
+LEGAL_STATE_CAMERA_TERMS = ("camera", "webcam", "video", "영상", "카메라", "웹캠")
+LEGAL_STATE_EDU_DECISION_TERMS = (
+    "access restriction", "admission", "placement", "evaluation", "score", "scoring", "ranking", "recommendation",
+    "프로파일링", "접근 제한", "배치", "평가", "점수", "등급", "순위", "추천",
+)
+LEGAL_STATE_EXPLANATION_TERMS = (
+    "right to explanation", "explanation request", "appeal", "contest decision", "explainability",
+    "설명 요청", "설명권", "이의제기", "이의 제기",
+)
+
+
+def _contains_any(text: str, terms: Sequence[str]) -> bool:
+    lower = str(text or "").lower()
+    return any(str(term).lower() in lower for term in terms)
+
+
+def _classify_legal_state(
+    *,
+    customer_text: str,
+    user_question: str,
+) -> Dict[str, Any]:
+    merged = f"{str(user_question or '')} {str(customer_text or '')}"
+    compact = " ".join(merged.split())[:24000]
+    lowered = compact.lower()
+
+    states: List[str] = []
+    required_articles: List[str] = []
+    required_clauses: List[str] = []
+    evidence_signals: List[str] = []
+
+    in_education = _contains_any(lowered, LEGAL_STATE_EDUCATION_TERMS)
+    in_workplace = _contains_any(lowered, LEGAL_STATE_WORKPLACE_TERMS)
+    has_emotion = _contains_any(lowered, LEGAL_STATE_EMOTION_TERMS)
+    has_camera = _contains_any(lowered, LEGAL_STATE_CAMERA_TERMS)
+    has_inference = ("infer" in lowered) or ("추론" in lowered)
+    has_edu_decision = in_education and _contains_any(lowered, LEGAL_STATE_EDU_DECISION_TERMS)
+
+    # Prohibited practice: emotion inference in education/workplace contexts.
+    if (in_education or in_workplace) and (has_emotion or (has_camera and has_inference)):
+        states.append("prohibited_practice")
+        required_articles.extend(["Article 5", "Article 86"])
+        required_clauses.append("Article 5(1)(f)")
+        evidence_signals.append("emotion_inference_in_education_or_workplace")
+
+    # High-risk classification: Annex III education use-cases.
+    if has_edu_decision:
+        states.append("high_risk_classification")
+        required_articles.extend(["Article 6", "Article 9", "Article 14"])
+        required_clauses.extend(["Annex III 3(a)", "Annex III 3(b)"])
+        evidence_signals.append("education_admission_placement_or_assessment")
+
+    if _contains_any(lowered, ("gpai", "general-purpose ai", "foundation model", "범용 ai", "파운데이션 모델")):
+        states.append("gpai_obligations")
+        required_articles.extend(["Article 51", "Article 52", "Article 53", "Article 54", "Article 55"])
+        evidence_signals.append("gpai_model_context")
+
+    if _contains_any(lowered, LEGAL_STATE_EXPLANATION_TERMS):
+        required_articles.append("Article 86")
+        required_clauses.append("Article 86(1)")
+        evidence_signals.append("explanation_right_context")
+
+    if _contains_any(lowered, ("penalty", "fine", "sanction", "벌금", "과징금", "제재")):
+        required_articles.append("Article 99")
+        evidence_signals.append("penalty_or_sanction_context")
+
+    normalized_articles = _dedupe_list([_normalize_article_id(v) for v in required_articles if _normalize_article_id(v)])
+    normalized_clauses = _dedupe_list([str(v).strip() for v in required_clauses if str(v).strip()])
+    states = _dedupe_list(states)
+
+    return {
+        "states": states,
+        "required_articles": normalized_articles,
+        "required_clauses": normalized_clauses,
+        "evidence_signals": _dedupe_list(evidence_signals),
+    }
+
+
 def _tokenize(text: str) -> List[str]:
     return TOKEN_RE.findall(str(text or "").lower())
 
@@ -708,6 +794,8 @@ def _evaluate_evidence_alignment(
     trigger_terms: Sequence[str],
     requirement_evidence: Sequence[Mapping[str, Any]],
     obligation_evidence: Sequence[Mapping[str, Any]],
+    related_articles: Sequence[str] | None = None,
+    mandatory_articles: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     expected_codes = _expected_control_codes(
         theme=theme,
@@ -720,9 +808,30 @@ def _evaluate_evidence_alignment(
     )
     matched_codes = [code for code in expected_codes if code in set(actual_codes)]
     has_any_evidence = bool(requirement_evidence or obligation_evidence)
+    actual_articles = _dedupe_list(
+        [_normalize_article_id(str(v)) for v in (related_articles or []) if str(v).strip()]
+        + [_normalize_article_id(str(item.get("article_id", ""))) for item in requirement_evidence]
+        + [
+            _normalize_article_id(str(article_id))
+            for item in obligation_evidence
+            for article_id in (item.get("articles") or [])
+            if str(article_id).strip()
+        ]
+    )
+    actual_articles = [v for v in actual_articles if v]
+    mandatory_set = {
+        v
+        for v in _dedupe_list(
+            [_normalize_article_id(str(v)) for v in (mandatory_articles or []) if str(v).strip()]
+        )
+        if v
+    }
+    mandatory_hit = bool(set(actual_articles) & mandatory_set) if mandatory_set else True
 
     if not has_any_evidence:
         status = "insufficient"
+    elif mandatory_set and not mandatory_hit:
+        status = "mismatch_downgraded"
     elif expected_codes and not matched_codes:
         status = "mismatch_downgraded"
     else:
@@ -733,6 +842,9 @@ def _evaluate_evidence_alignment(
         "expected_codes": expected_codes,
         "actual_codes": actual_codes,
         "matched_codes": matched_codes,
+        "actual_articles": actual_articles,
+        "mandatory_articles": sorted(mandatory_set),
+        "mandatory_hit": bool(mandatory_hit),
         "expected_labels": [_control_label_from_code(code) for code in expected_codes[:4]],
         "matched_labels": [_control_label_from_code(code) for code in matched_codes[:4]],
     }
@@ -1123,6 +1235,7 @@ def _derive_mandatory_articles(
     theme: str,
     retrieval_keywords: Sequence[str],
     trigger_terms: Sequence[str],
+    legal_state_required_articles: Sequence[str],
     hint_articles: Sequence[str],
     query_articles: Sequence[str],
     usecase_candidates: Sequence[Mapping[str, Any]],
@@ -1130,6 +1243,7 @@ def _derive_mandatory_articles(
     texts = [str(theme or "")] + [str(v or "") for v in retrieval_keywords] + [str(v or "") for v in trigger_terms]
     bag = " ".join(texts).lower()
     mandatory: List[str] = []
+    mandatory.extend([str(v).strip() for v in legal_state_required_articles if str(v).strip()])
 
     # Explicit user mentions (e.g., "Article 86", "Art.51-55") should always be preserved.
     mandatory.extend(_extract_explicit_article_mentions(*texts))
@@ -1811,7 +1925,11 @@ def _llm_issue_extraction(
     return payload if isinstance(payload, dict) else {}
 
 
-def _build_summary_from_issues(issues: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+def _build_summary_from_issues(
+    issues: Sequence[Mapping[str, Any]],
+    *,
+    legal_state: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     actionable = [
         item
         for item in issues
@@ -1828,6 +1946,25 @@ def _build_summary_from_issues(issues: Sequence[Mapping[str, Any]]) -> Dict[str,
         score = max(score, 30)
     elif medium_count == 1:
         score = max(score, 20)
+
+    prohibited_confirmed = any(
+        (
+            "Article 5" in [str(v).strip() for v in (item.get("related_articles") or [])]
+            and str(item.get("evidence_status", "")).strip() in {"grounded", "mismatch_downgraded"}
+        )
+        for item in issues
+    )
+    high_risk_confirmed = any(
+        (
+            "Article 6" in [str(v).strip() for v in (item.get("related_articles") or [])]
+            and str(item.get("evidence_status", "")).strip() in {"grounded", "mismatch_downgraded"}
+        )
+        for item in issues
+    )
+    if prohibited_confirmed:
+        score = max(score, 75)
+    elif high_risk_confirmed:
+        score = max(score, 55)
 
     if score >= 70:
         level = "HIGH"
@@ -1850,6 +1987,9 @@ def _build_summary_from_issues(issues: Sequence[Mapping[str, Any]]) -> Dict[str,
         "high_issue_count": int(high_count),
         "medium_issue_count": int(medium_count),
         "low_issue_count": int(low_count),
+        "prohibited_confirmed": bool(prohibited_confirmed),
+        "high_risk_confirmed": bool(high_risk_confirmed),
+        "legal_state": dict(legal_state or {}),
     }
 
 
@@ -1894,6 +2034,13 @@ def run_intent_rag_assessment(
         rule_issues=rule_issues,
         max_items=6,
     )
+    legal_state = _classify_legal_state(customer_text=body, user_question=question)
+    legal_state_required_articles = [
+        str(v).strip() for v in (legal_state.get("required_articles") or []) if str(v).strip()
+    ]
+    legal_state_required_clauses = [
+        str(v).strip() for v in (legal_state.get("required_clauses") or []) if str(v).strip()
+    ]
 
     if not raw_issues:
         fallback = run_intent_scenario_assessment(
@@ -1912,6 +2059,7 @@ def run_intent_rag_assessment(
             fallback_meta["retrieval_debug"] = {"mode": mode, "fallback": True}
             fallback_meta["llm_extraction_failed"] = True
             fallback_meta["rule_signal_count"] = len(rule_issues)
+            fallback_meta["legal_state"] = dict(legal_state or {})
             fallback["meta"] = fallback_meta
         return fallback
 
@@ -1962,6 +2110,7 @@ def run_intent_rag_assessment(
             theme=theme,
             retrieval_keywords=effective_keywords,
             trigger_terms=trigger_terms,
+            legal_state_required_articles=legal_state_required_articles,
             hint_articles=hint_articles,
             query_articles=query_articles,
             usecase_candidates=usecase_candidates,
@@ -2072,6 +2221,7 @@ def run_intent_rag_assessment(
                 "primary_evidence_type": primary_evidence_type,
                 "usecase_candidates": usecase_candidates,
                 "mandatory_articles": mandatory_articles,
+                "required_clauses": legal_state_required_clauses,
                 "usecase_hints": _summarize_usecase_hints(usecase_candidates, max_items=3),
             }
         )
@@ -2169,6 +2319,8 @@ def run_intent_rag_assessment(
             trigger_terms=list(item.get("trigger_terms", [])),
             requirement_evidence=requirement_evidence,
             obligation_evidence=obligation_evidence,
+            related_articles=supported_articles,
+            mandatory_articles=mandatory_articles,
         )
         evidence_status = str(alignment.get("status", "insufficient")).strip() or "insufficient"
         original_severity = str(item.get("severity", "medium")).strip().lower()
@@ -2274,6 +2426,7 @@ def run_intent_rag_assessment(
                 "primary_control_label": primary_control_label,
                 "alignment_expected_controls": list(alignment.get("expected_labels", [])),
                 "alignment_matched_controls": list(alignment.get("matched_labels", [])),
+                "required_clauses": [str(v).strip() for v in (item.get("required_clauses") or []) if str(v).strip()],
                 "kg_article_evidence": kg_article_evidence,
                 "requirement_evidence": requirement_evidence,
                 "obligation_evidence": obligation_evidence,
@@ -2294,7 +2447,7 @@ def run_intent_rag_assessment(
         )
     )
 
-    summary = _build_summary_from_issues(enriched_issues)
+    summary = _build_summary_from_issues(enriched_issues, legal_state=legal_state)
     key_findings = _dedupe_list(
         [str(item.get("finding", "")).strip() for item in enriched_issues[:6] if str(item.get("finding", "")).strip()]
     )
@@ -2343,6 +2496,7 @@ def run_intent_rag_assessment(
         "mode": mode,
         "profile": profile,
         "issue_count": len(normalized_issues),
+        "legal_state": dict(legal_state or {}),
         "hybrid_signal": {
             "llm_issue_count": int(len(llm_raw_issues)),
             "rule_issue_count": int(len(rule_issues)),
@@ -2369,6 +2523,7 @@ def run_intent_rag_assessment(
             "llm_issue_count": int(len(llm_raw_issues)),
             "rule_issue_count": int(len(rule_issues)),
             "llm_extraction_failed": bool(llm_extraction_failed),
+            "legal_state": dict(legal_state or {}),
             "retrieval_debug": retrieval_debug,
             "shadow_diff_path": None,
         },

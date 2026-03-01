@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 ARTICLE_ID_RE = re.compile(r"^article\s+(\d+)$", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[a-z0-9]{2,}|[\uac00-\ud7a3]{2,}", re.IGNORECASE)
-GENERIC_ARTICLE_IDS = {"Article 12", "Article 13", "Article 14"}
+GENERIC_ARTICLE_IDS = {"Article 10", "Article 12", "Article 13", "Article 14", "Article 15"}
 
 
 def _normalize_article_id(value: str) -> str:
@@ -585,6 +585,7 @@ def retrieve_issue_evidence_v2(
                 "req_text": str(item.get("req_text", "")),
                 "article_id": article_id,
                 "score": int(item.get("score", 0) or 0),
+                "_final_score": float(item.get("_final_score", 0.0) or 0.0),
             }
         )
         if mandatory_set and article_id not in mandatory_set:
@@ -601,6 +602,8 @@ def retrieve_issue_evidence_v2(
         article_counts_fb: Dict[str, int] = {}
         for item in aligned_pool:
             article_id = str(item.get("article_id", ""))
+            if mandatory_set and article_id not in mandatory_set:
+                continue
             if article_counts_fb.get(article_id, 0) >= 1:
                 continue
             article_counts_fb[article_id] = article_counts_fb.get(article_id, 0) + 1
@@ -610,6 +613,7 @@ def retrieve_issue_evidence_v2(
                     "req_text": str(item.get("req_text", "")),
                     "article_id": article_id,
                     "score": int(item.get("score", 0) or 0),
+                    "_final_score": float(item.get("_final_score", 0.0) or 0.0),
                 }
             )
             if len(selected_requirements) >= 2:
@@ -744,7 +748,7 @@ def retrieve_issue_evidence_v2(
         + [str(v.get("article_id", "")).strip() for v in selected_article_candidates]
     )
 
-    all_selected_scores = [float(v.get("_final_score", 0.0)) for v in req_candidates[:3]]
+    all_selected_scores = [float(v.get("_final_score", 0.0)) for v in selected_requirements[:3]]
     if not all_selected_scores and selected_article_candidates:
         all_selected_scores = [float(v.get("_final_score", 0.0)) for v in selected_article_candidates[:3]]
     if selected_obligations and not all_selected_scores:
