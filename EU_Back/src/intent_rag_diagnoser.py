@@ -190,6 +190,73 @@ CONTROL_TERM_TO_CODE: Dict[str, str] = {
 }
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
+AI_ACT_HYBRID_SIGNAL_RULES: List[Dict[str, Any]] = [
+    {
+        "id": "ai_generated_disclosure",
+        "theme": "AI 생성물 미고지/라벨링 투명성 리스크",
+        "severity": "high",
+        "risk_points": 22,
+        "keywords": ["ai로 만들", "ai generated", "synthetic", "deepfake", "라벨", "표시", "고지"],
+        "retrieval_keywords": ["ai generated", "labeling", "transparency", "disclosure"],
+    },
+    {
+        "id": "voice_cloning_impersonation",
+        "theme": "음성 클로닝/합성음 사칭 리스크",
+        "severity": "high",
+        "risk_points": 22,
+        "keywords": ["voice cloning", "cloning", "elevenlabs", "합성음", "목소리", "사칭"],
+        "retrieval_keywords": ["voice cloning", "synthetic voice", "transparency", "traceability"],
+    },
+    {
+        "id": "biometric_face_processing",
+        "theme": "실사형 AI 아바타/얼굴 표현 오인 리스크",
+        "severity": "high",
+        "risk_points": 20,
+        "keywords": ["셀카", "얼굴", "face", "avatar", "heygen", "입모양", "face animation"],
+        "retrieval_keywords": ["biometric", "face", "transparency", "data governance", "human oversight"],
+    },
+    {
+        "id": "employment_automation",
+        "theme": "고용/채용 관련 자동 의사결정",
+        "severity": "high",
+        "risk_points": 22,
+        "keywords": ["채용", "면접", "hiring", "recruit", "employment", "자동 평가"],
+        "retrieval_keywords": ["employment", "recruitment", "human oversight", "accuracy", "risk management"],
+    },
+    {
+        "id": "data_security_and_storage",
+        "theme": "데이터 보안/저장 리스크",
+        "severity": "medium",
+        "risk_points": 14,
+        "keywords": ["s3", "클라우드", "cloud", "저장", "암호화", "encryption", "접근권한"],
+        "retrieval_keywords": ["security", "traceability", "logging", "data governance", "storage"],
+    },
+    {
+        "id": "third_party_chain",
+        "theme": "다중 서드파티 생성형 모델 사용/근거체인 불명확 리스크",
+        "severity": "medium",
+        "risk_points": 14,
+        "keywords": ["midjourney", "heygen", "firefly", "third-party", "provenance", "외부 도구"],
+        "retrieval_keywords": ["third-party", "provenance", "traceability", "instructions for use"],
+    },
+    {
+        "id": "cross_border_eu",
+        "theme": "EU 배포/국경간 적용범위 리스크",
+        "severity": "medium",
+        "risk_points": 13,
+        "keywords": ["eu", "유럽", "독일", "프랑스", "cross-border", "distribution"],
+        "retrieval_keywords": ["eu distribution", "cross-border", "provider", "deployer", "transparency"],
+    },
+    {
+        "id": "sensitive_attribute_inference",
+        "theme": "민감속성(인종/민족 등) 추론",
+        "severity": "high",
+        "risk_points": 18,
+        "keywords": ["race", "ethnicity", "인종", "민족", "demographic", "민감속성"],
+        "retrieval_keywords": ["sensitive attribute", "biometric categorisation", "data governance", "accuracy"],
+    },
+]
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -642,6 +709,68 @@ def _dedupe_overlapping_issue_signals(issues: Sequence[Mapping[str, Any]], max_i
         if len(kept) < max(1, int(max_items)):
             kept.append(dict(item))
     return kept
+
+
+def _extract_rule_based_issue_signals(
+    *,
+    customer_text: str,
+    user_question: str | None,
+) -> List[Dict[str, Any]]:
+    question = str(user_question or "").strip().lower()
+    body = str(customer_text or "").strip().lower()
+    bag = " ".join([v for v in [question, body] if v]).strip()
+    if not bag:
+        return []
+
+    issues: List[Dict[str, Any]] = []
+    for rule in AI_ACT_HYBRID_SIGNAL_RULES:
+        keywords = [str(v).strip().lower() for v in (rule.get("keywords") or []) if str(v).strip()]
+        hits = [kw for kw in keywords if kw in bag]
+        if not hits:
+            continue
+        retrieval_keywords = _dedupe_list(
+            [str(v).strip().lower() for v in (rule.get("retrieval_keywords") or []) if str(v).strip()]
+            + hits[:4]
+        )
+        issues.append(
+            {
+                "theme": str(rule.get("theme", "")).strip() or "사용자 맥락 기반 AI Act 리스크",
+                "severity": str(rule.get("severity", "medium")).strip().lower(),
+                "risk_points": int(rule.get("risk_points", DEFAULT_RISK_POINTS["medium"]) or DEFAULT_RISK_POINTS["medium"]),
+                "trigger_terms": _dedupe_list(hits[:6]),
+                "retrieval_keywords": retrieval_keywords,
+            }
+        )
+    return issues
+
+
+def _merge_hybrid_extracted_issues(
+    *,
+    llm_issues: Sequence[Mapping[str, Any]],
+    rule_issues: Sequence[Mapping[str, Any]],
+    max_items: int = 6,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for item in list(llm_issues or []) + list(rule_issues or []):
+        if not isinstance(item, Mapping):
+            continue
+        rows.append(
+            {
+                "theme": str(item.get("theme", "")).strip() or "사용자 맥락 기반 AI Act 리스크",
+                "severity": str(item.get("severity", "medium")).strip().lower() or "medium",
+                "risk_points": int(item.get("risk_points", 0) or 0),
+                "trigger_terms": _dedupe_list(
+                    [str(v).strip() for v in (item.get("trigger_terms") or []) if str(v).strip()]
+                ),
+                "retrieval_keywords": _dedupe_list(
+                    [str(v).strip().lower() for v in (item.get("retrieval_keywords") or []) if str(v).strip()]
+                ),
+                "related_articles": _dedupe_list(
+                    [str(v).strip() for v in (item.get("related_articles") or []) if str(v).strip()]
+                ),
+            }
+        )
+    return _dedupe_overlapping_issue_signals(rows, max_items=max_items)
 
 
 def _prioritize_requirements_for_theme(
@@ -1378,6 +1507,93 @@ def _build_grounded_action(
     return "근거가 충분하지 않습니다. 시나리오 사실관계를 보강한 뒤 리트리버를 다시 실행하세요."
 
 
+def _friendly_primary_controls(
+    *,
+    requirement_evidence: Sequence[Mapping[str, Any]],
+    obligation_evidence: Sequence[Mapping[str, Any]],
+    max_items: int = 3,
+) -> List[str]:
+    controls: List[str] = []
+    for item in requirement_evidence[: max(1, int(max_items) + 2)]:
+        label = _summarize_requirement_ko(str(item.get("req_text", "")), str(item.get("req_id", "")))
+        if label:
+            controls.append(label)
+    for item in obligation_evidence[:2]:
+        label = _summarize_requirement_ko(
+            str(item.get("description", "")).strip() or str(item.get("obligation_id", "")).strip(),
+            str(item.get("obligation_id", "")).strip(),
+        )
+        if label:
+            controls.append(label)
+    return _dedupe_list(controls)[: max(1, int(max_items))]
+
+
+def _friendly_supporting_paths_preview(
+    *,
+    kg_paths: Sequence[Mapping[str, Any]],
+    max_items: int = 3,
+) -> List[str]:
+    lines: List[str] = []
+    for path in kg_paths[: max(1, int(max_items) + 2)]:
+        if not isinstance(path, Mapping):
+            continue
+        path_type = str(path.get("path_type", "")).strip().lower()
+        article_id = _normalize_article_id(str(path.get("article_id", "")).strip())
+        source_article_id = _normalize_article_id(str(path.get("source_article_id", "")).strip())
+        obligation_id = str(path.get("obligation_id", "")).strip()
+        if path_type == "obligation_article" and obligation_id and article_id:
+            lines.append(f"의무 항목 {obligation_id}이 {article_id}와 직접 연결됨")
+        elif path_type == "article_reference" and source_article_id and article_id:
+            lines.append(f"{source_article_id}이 {article_id}를 참조함")
+        elif path_type in {"article_penalty", "obligation_article_penalty"} and article_id:
+            lines.append(f"{article_id}와 제재/책임 경로가 연결됨")
+    return _dedupe_list(lines)[: max(1, int(max_items))]
+
+
+def _build_user_evidence_bullets(
+    *,
+    theme: str,
+    trigger_terms: Sequence[str],
+    related_articles: Sequence[str],
+    requirement_evidence: Sequence[Mapping[str, Any]],
+    obligation_evidence: Sequence[Mapping[str, Any]],
+    evidence_status: str,
+    evidence_confidence: float,
+    kg_paths: Sequence[Mapping[str, Any]],
+) -> List[str]:
+    bullets: List[str] = []
+    safe_theme = _normalize_theme(theme)
+    compact_terms = [str(v).strip() for v in trigger_terms if str(v).strip()][:3]
+    if compact_terms:
+        bullets.append(f"문서에서 '{', '.join(compact_terms)}' 정황이 확인되어 '{safe_theme}' 이슈로 분류했습니다.")
+
+    article_lines = _article_brief_lines(related_articles, max_items=3)
+    if article_lines:
+        bullets.append(f"관련 조항 요약: {' / '.join(article_lines)}")
+
+    controls = _friendly_primary_controls(
+        requirement_evidence=requirement_evidence,
+        obligation_evidence=obligation_evidence,
+        max_items=2,
+    )
+    if controls:
+        bullets.append(f"핵심 의무 포인트: {', '.join(controls)}")
+
+    path_lines = _friendly_supporting_paths_preview(kg_paths=kg_paths, max_items=2)
+    if path_lines:
+        bullets.append(f"추가 연결 근거: {' / '.join(path_lines)}")
+
+    confidence_pct = max(0, min(100, int(round(float(evidence_confidence or 0.0) * 100))))
+    status_map = {
+        "grounded": "근거 확인",
+        "mismatch_downgraded": "정합성 낮음(자동 강등)",
+        "insufficient": "근거 부족(예비 진단)",
+    }
+    status_text = status_map.get(str(evidence_status or "").strip().lower(), "근거 상태 미확인")
+    bullets.append(f"근거 상태: {status_text} / 근거 신뢰도(내부): {confidence_pct}%")
+    return _dedupe_list([str(v).strip() for v in bullets if str(v).strip()])[:6]
+
+
 def _llm_issue_extraction(
     *,
     customer_text: str,
@@ -1482,12 +1698,27 @@ def run_intent_rag_assessment(
         mode = "v2"
     profile = str(retriever_profile or "precision_first").strip().lower() or "precision_first"
     shadow_enabled = bool(retriever_shadow)
+    rule_issues = _extract_rule_based_issue_signals(customer_text=body, user_question=question)
+    llm_raw_issues: List[Mapping[str, Any]] = []
+    llm_extraction_failed = False
     try:
         extracted = _llm_issue_extraction(customer_text=body, user_question=question, model_name=model_name)
-        raw_issues = extracted.get("issues", []) if isinstance(extracted, dict) else []
-        if not isinstance(raw_issues, list) or not raw_issues:
+        candidate = extracted.get("issues", []) if isinstance(extracted, dict) else []
+        if isinstance(candidate, list):
+            llm_raw_issues = [v for v in candidate if isinstance(v, Mapping)]
+        if not llm_raw_issues:
             raise ValueError("No issues extracted from LLM.")
     except Exception:
+        llm_extraction_failed = True
+        llm_raw_issues = []
+
+    raw_issues = _merge_hybrid_extracted_issues(
+        llm_issues=llm_raw_issues,
+        rule_issues=rule_issues,
+        max_items=6,
+    )
+
+    if not raw_issues:
         fallback = run_intent_scenario_assessment(
             graph=graph,
             customer_text=body,
@@ -1502,6 +1733,8 @@ def run_intent_rag_assessment(
             fallback_meta["retriever_profile"] = profile
             fallback_meta["retriever_shadow_enabled"] = shadow_enabled
             fallback_meta["retrieval_debug"] = {"mode": mode, "fallback": True}
+            fallback_meta["llm_extraction_failed"] = True
+            fallback_meta["rule_signal_count"] = len(rule_issues)
             fallback["meta"] = fallback_meta
         return fallback
 
@@ -1785,6 +2018,22 @@ def run_intent_rag_assessment(
             expected_labels=list(alignment.get("expected_labels", [])),
             friendly_text=bool(friendly_text),
         )
+        primary_controls = _friendly_primary_controls(
+            requirement_evidence=requirement_evidence,
+            obligation_evidence=obligation_evidence,
+            max_items=3,
+        )
+        supporting_paths_preview = _friendly_supporting_paths_preview(kg_paths=kg_paths, max_items=3)
+        evidence_bullets = _build_user_evidence_bullets(
+            theme=str(item.get("theme", "")),
+            trigger_terms=item.get("trigger_terms", []),
+            related_articles=supported_articles,
+            requirement_evidence=requirement_evidence,
+            obligation_evidence=obligation_evidence,
+            evidence_status=evidence_status if grounded else "insufficient",
+            evidence_confidence=float(item.get("evidence_confidence", 0.0) or 0.0),
+            kg_paths=kg_paths,
+        )
         primary_control_label = ""
         if requirement_evidence:
             first_req = requirement_evidence[0]
@@ -1811,6 +2060,9 @@ def run_intent_rag_assessment(
                 "retrieval_trace": [dict(v) for v in (item.get("retrieval_trace") or []) if isinstance(v, Mapping)],
                 "finding": finding,
                 "recommended_action": recommended_action,
+                "evidence_bullets": evidence_bullets,
+                "primary_controls": primary_controls,
+                "supporting_paths_preview": supporting_paths_preview,
                 "primary_control_label": primary_control_label,
                 "alignment_expected_controls": list(alignment.get("expected_labels", [])),
                 "alignment_matched_controls": list(alignment.get("matched_labels", [])),
@@ -1883,6 +2135,11 @@ def run_intent_rag_assessment(
         "mode": mode,
         "profile": profile,
         "issue_count": len(normalized_issues),
+        "hybrid_signal": {
+            "llm_issue_count": int(len(llm_raw_issues)),
+            "rule_issue_count": int(len(rule_issues)),
+            "llm_extraction_failed": bool(llm_extraction_failed),
+        },
         "channel_hits_total": channel_totals,
         "selected_total": selected_totals,
     }
@@ -1900,6 +2157,10 @@ def run_intent_rag_assessment(
             "friendly_text_enabled": bool(friendly_text),
             "article_diversity_enabled": bool(article_diversity),
             "extended_kg_enabled": bool(extended_kg),
+            "hybrid_signal_enabled": True,
+            "llm_issue_count": int(len(llm_raw_issues)),
+            "rule_issue_count": int(len(rule_issues)),
+            "llm_extraction_failed": bool(llm_extraction_failed),
             "retrieval_debug": retrieval_debug,
             "shadow_diff_path": None,
         },

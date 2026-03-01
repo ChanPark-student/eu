@@ -168,6 +168,21 @@ function Verify() {
                                                     )}
                                                 </div>
                                                 <p className="font-semibold text-slate-900 dark:text-white">{issue.theme || '주제 없음'}</p>
+                                                {Array.isArray(issue.evidence_bullets) && issue.evidence_bullets.length > 0 && (
+                                                    <div className="text-sm text-slate-700 dark:text-slate-200 space-y-1">
+                                                        <p className="font-medium">근거 요약(쉽게 보기)</p>
+                                                        <ul className="list-disc list-inside space-y-1">
+                                                            {issue.evidence_bullets.map((line, lineIdx) => (
+                                                                <li key={`evidence-${idx}-${lineIdx}`}>{line}</li>
+                                                            ))}
+                                                        </ul>
+                                                    </div>
+                                                )}
+                                                {Array.isArray(issue.primary_controls) && issue.primary_controls.length > 0 && (
+                                                    <p className="text-sm text-slate-700 dark:text-slate-200">
+                                                        핵심 통제: {issue.primary_controls.join(', ')}
+                                                    </p>
+                                                )}
                                                 {Array.isArray(issue.related_article_briefs) && issue.related_article_briefs.length > 0 ? (
                                                     <div className="text-sm text-slate-600 dark:text-slate-300 space-y-1">
                                                         <p className="font-medium">관련 조항(요약)</p>
@@ -192,6 +207,11 @@ function Verify() {
                                                 {Array.isArray(issue.timeline_hints) && issue.timeline_hints.length > 0 && (
                                                     <p className="text-sm text-slate-600 dark:text-slate-300">
                                                         관련 시행시점: {issue.timeline_hints.join(', ')}
+                                                    </p>
+                                                )}
+                                                {Array.isArray(issue.supporting_paths_preview) && issue.supporting_paths_preview.length > 0 && (
+                                                    <p className="text-sm text-slate-600 dark:text-slate-300">
+                                                        연결 근거: {issue.supporting_paths_preview.join(' / ')}
                                                     </p>
                                                 )}
                                                 {issue.finding && (

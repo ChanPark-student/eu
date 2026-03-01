@@ -18,6 +18,9 @@ class VerifyIssue(BaseModel):
     evidence_status_label: Optional[str] = None
     related_articles: List[str] = Field(default_factory=list)
     related_article_briefs: List[str] = Field(default_factory=list)
+    evidence_bullets: List[str] = Field(default_factory=list)
+    primary_controls: List[str] = Field(default_factory=list)
+    supporting_paths_preview: List[str] = Field(default_factory=list)
     usecase_hints: List[str] = Field(default_factory=list)
     timeline_hints: List[str] = Field(default_factory=list)
     finding: str = ""

@@ -163,6 +163,11 @@ def verify_system(request: VerifyRequest, db: Session = Depends(get_db)) -> Veri
                 related_article_briefs=[
                     str(v).strip() for v in (issue.get("related_article_briefs") or []) if str(v).strip()
                 ],
+                evidence_bullets=[str(v).strip() for v in (issue.get("evidence_bullets") or []) if str(v).strip()],
+                primary_controls=[str(v).strip() for v in (issue.get("primary_controls") or []) if str(v).strip()],
+                supporting_paths_preview=[
+                    str(v).strip() for v in (issue.get("supporting_paths_preview") or []) if str(v).strip()
+                ],
                 usecase_hints=[str(v).strip() for v in (issue.get("usecase_hints") or []) if str(v).strip()],
                 timeline_hints=[str(v).strip() for v in (issue.get("timeline_hints") or []) if str(v).strip()],
                 finding=str(issue.get("finding", "")).strip(),
